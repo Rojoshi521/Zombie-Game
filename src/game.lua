@@ -21,10 +21,12 @@ local MAP_W, MAP_H = 88, 88
 -- The settlement sits in the middle of the town. Layout coordinates below
 -- are written relative to the base and shifted by B.
 local B = 20
-local F_MIN, F_MAX = 14 + B, 35 + B -- fence ring, in cells
+local F_MIN, F_MAX = 14 + B, 39 + B -- fence ring, in cells
 local FOOD_PER_SURVIVOR = 0.018 -- per second
 local REBUILD_COST = 8
 local HP_PER_SCRAP = 25
+-- Groups whose work helps the whole settlement (see Game:applyEffort).
+local SUPPORT = { Medicine = true, Research = true, Logistics = true, Leadership = true }
 Game.F_MIN, Game.F_MAX, Game.B = F_MIN, F_MAX, B
 Game.MAP_W, Game.MAP_H = MAP_W, MAP_H
 
@@ -38,7 +40,8 @@ function Game.new(hqDef)
   g.messages = {}
   g.selection = {}
   g.sites = {}
-  g.res = { food = 40, ammo = 160, scrap = 40 }
+  -- enough scrap for one building: the first choice is the player's
+  g.res = { food = 90, ammo = 160, scrap = S.BUILD_COST }
   g.stock = { rifle = 4, pistol = 4 }
   g.time, g.speed, g.paused = 0, 1, false
   g.stats = { kills = 0, lost = 0 }
@@ -49,24 +52,32 @@ function Game.new(hqDef)
   g.alertMult = hqDef.id == "watertower" and 2 or 1
   g.scrapMult = hqDef.id == "ferriswheel" and 1.5 or 1
   g.luck = hqDef.id == "casino" and 0.35 or 0
-  g.learnMult = hqDef.id == "broadcast" and 1.4 or 1
+  g.learnBase = hqDef.id == "broadcast" and 1.4 or 1
+  g.learnMult = g.learnBase
+  g.workMult = 1
   g.drawList = {}
   g.units = {}
 
   g:buildSettlement()
   g.groups = {
     Combat = { rallyX = B + 27.6, rallyY = B + 27.6 },
+    Engineering = { rallyX = B + 26.0, rallyY = B + 22.0 },
     Scouting = { rallyX = B + 24.5, rallyY = B + 20.2 },
     Scavenging = { rallyX = B + 21.0, rallyY = B + 31.0 },
+    Medicine = { rallyX = B + 23.5, rallyY = B + 28.5 },
+    Research = { rallyX = B + 22.0, rallyY = B + 28.5 },
     Agriculture = { rallyX = B + 20.6, rallyY = B + 22.0 },
+    Fabrication = { rallyX = B + 27.0, rallyY = B + 24.5 },
+    Logistics = { rallyX = B + 25.0, rallyY = B + 30.0 },
+    Leadership = { rallyX = B + 25.5, rallyY = B + 27.0 },
   }
   for name, grp in pairs(g.groups) do
     grp.loadout = D.GROUP_LOADOUT[name]
     grp.mobilized = false
   end
-  for _, c in ipairs({ { "Combat", 3 }, { "Scouting", 2 }, { "Scavenging", 2 }, { "Agriculture", 3 } }) do
-    for _ = 1, c[2] do g:addSurvivor(Survivor.generate(c[1])) end
-  end
+  -- ten survivors, one in each group
+  for _, name in ipairs(D.GROUPS) do g:addSurvivor(Survivor.generate(name)) end
+  g.effort, g.effortNext = {}, {}
 
   g.director = Director.new(g)
   g:initFog()
@@ -77,6 +88,7 @@ function Game.new(hqDef)
   g:updateFog()
   g:message("Welcome to " .. hqDef.name .. ". Night falls in 3 minutes: explore the town while it is light.")
   g:message("The town outside is unexplored. Send scouts to look, and scavengers to search buildings.")
+  g:message("You have scrap for one building. Open a group (1-9, 0) and choose what to build first.", "alert")
   g:message("Press F1 for controls.")
   return g
 end
@@ -94,12 +106,7 @@ end
 function Game:buildSettlement()
   self.hq = self:addStructure("hq", B + 23, B + 23, { hqId = self.hqDef.id, name = self.hqDef.name,
     desc = "Headquarters. " .. self.hqDef.text .. " If it falls, the settlement is lost." })
-  self.garden = self:addStructure("garden", B + 16, B + 26)
-  self.armory = self:addStructure("armory", B + 28, B + 17)
-  self.barracks = self:addStructure("barracks", B + 29, B + 29, { repairable = true })
-  self.hydroponics = self:addStructure("hydroponics", B + 17, B + 17, { repairable = true })
-  self.lookout = self:addStructure("lookout", B + 23, B + 16, { repairable = true })
-  self.salvageYard = self:addStructure("salvage", B + 16, B + 31, { repairable = true })
+  -- every other building is the player's to place (Game:placeBuilding)
 
   local towers = {
     [F_MIN .. "," .. F_MIN] = true, [F_MAX .. "," .. F_MIN] = true,
@@ -129,11 +136,6 @@ function Game:buildSettlement()
     end
   end
   self.hq.repairable = true
-  self.armory.repairable = true
-
-  for _, c in ipairs({ { 21, 18 }, { 33, 26 }, { 33, 29 }, { 17, 21 }, { 20, 33 }, { 31, 16 } }) do
-    self:addStructure("crates", B + c[1], B + c[2], { repairable = false })
-  end
 
   self.lamps = {
     { 23.3, 29.5, 2.2 }, { 26.7, 31.5, 2.2 }, { 29.5, 23.3, 2.2 }, { 31.5, 26.7, 2.2 },
@@ -160,8 +162,8 @@ end
 -- Dirt tracks inside the walls (the town's streets are asphalt).
 local function isRoad(cx, cy)
   cx, cy = cx - B, cy - B
-  if (cx == 24 or cx == 25) and cy >= 27 and cy <= 35 then return true end
-  if (cy == 24 or cy == 25) and cx >= 27 and cx <= 35 then return true end
+  if (cx == 24 or cx == 25) and cy >= 27 and cy <= F_MAX - B then return true end
+  if (cy == 24 or cy == 25) and cx >= 27 and cx <= F_MAX - B then return true end
   if cx >= 21 and cx <= 28 and cy >= 21 and cy <= 28 then
     return cx == 21 or cx == 28 or cy == 21 or cy == 28
   end
@@ -451,32 +453,50 @@ local function frontOf(s)
   return s.wx1 + 0.3 + love.math.random() * (s.w - 0.6), s.wy2 + 0.45 + love.math.random() * 0.7
 end
 
+-- The standing buildings a group works in.
+function Game:buildingsOf(group)
+  local out = {}
+  for _, s in ipairs(self.structures) do
+    if s.group == group and not s.dead then out[#out + 1] = s end
+  end
+  return out
+end
+
+-- Whether a group has somewhere to work. Leadership needs no building.
+function Game:canWork(group)
+  return group == "Leadership" or #self:buildingsOf(group) > 0
+end
+
 function Game:workSpot(group)
-  if group == "Agriculture" then
-    local hydro = self.hydroponics and not self.hydroponics.dead and self.hydroponics
-    if hydro and love.math.random() < 0.4 then return frontOf(hydro) end
-    local g = self.garden
-    return g.wx1 + 0.35 + love.math.random() * (g.w - 0.7), g.wy1 + 0.35 + love.math.random() * (g.h - 0.7)
-  end
-  if group == "Combat" then
-    if self.barracks and not self.barracks.dead then return frontOf(self.barracks) end
-    if not self.armory.dead then
-      local a = self.armory
-      return a.wx1 + 0.3 + love.math.random() * (a.w - 0.3), a.wy2 + 1.0 + love.math.random() * 1.2
+  local list = self:buildingsOf(group)
+  if #list > 0 then
+    local b = list[love.math.random(#list)]
+    if b.flat then
+      -- the garden is worked from inside its beds
+      return b.wx1 + 0.35 + love.math.random() * (b.w - 0.7), b.wy1 + 0.35 + love.math.random() * (b.h - 0.7)
     end
+    return frontOf(b)
   end
-  if group == "Scouting" and not self.lookout.dead then return frontOf(self.lookout) end
-  if group == "Scavenging" and not self.salvageYard.dead then return frontOf(self.salvageYard) end
+  -- Leadership, and any group with no building yet, waits in the yard in
+  -- front of the headquarters
   return self.hq.cx + (love.math.random() - 0.5) * 3, self.hq.wy2 + 1 + love.math.random()
 end
 
+-- How well a survivor works at their group's job.
+function Game:skill(s, group)
+  local hungry = self.res.food <= 0 and 0.5 or 1
+  return (0.6 + s.apt[group] * 0.06 + s.prof[group] * 0.05) * s:traitMul("work") * self.workMult * hungry
+end
+
 function Game:doWork(s, dt)
+  -- nothing gets done without the group's building
+  if not self:canWork(s.group) then return end
   local hungry = self.res.food <= 0 and 0.5 or 1
   if s.group == "Agriculture" then
     local rate = 0.085 * (0.6 + s.apt.Agriculture * 0.06 + s.prof.Agriculture * 0.05)
       * s:traitMul("work") * s:traitMul("farm") * self.foodMult * hungry
-    self.res.food = self.res.food + rate * dt
-    self.production = self.production + rate
+    self.res.food = self.res.food + rate * self.workMult * dt
+    self.production = self.production + rate * self.workMult
     s:learn(self, "Agriculture", 0.004 * dt)
   elseif s.group == "Combat" then
     s:learn(self, "Combat", 0.012 * dt * (0.5 + s.apt.Combat * 0.08) * hungry)
@@ -484,19 +504,58 @@ function Game:doWork(s, dt)
     s:learn(self, "Scouting", 0.01 * dt * (0.5 + s.apt.Scouting * 0.08) * hungry)
   elseif s.group == "Scavenging" then
     -- picking through the scrap pile slowly turns up more
-    self.scrapAcc = (self.scrapAcc or 0) + 0.02 * (0.6 + s.apt.Scavenging * 0.06) * s:traitMul("work") * hungry * dt
+    self.scrapAcc = (self.scrapAcc or 0) + 0.02 * (0.6 + s.apt.Scavenging * 0.06) * s:traitMul("work") * self.workMult * hungry * dt
     if self.scrapAcc >= 1 then
       self.res.scrap = self.res.scrap + 1
       self.scrapAcc = self.scrapAcc - 1
     end
     s:learn(self, "Scavenging", 0.004 * dt)
+  elseif s.group == "Engineering" then
+    -- patch the most damaged wall or building, free of scrap but slow
+    local worst, wf = nil, 1
+    for _, st in ipairs(self.structures) do
+      if st.repairable and not st.dead and st.hp < st.maxhp and st.hp / st.maxhp < wf then worst, wf = st, st.hp / st.maxhp end
+    end
+    if worst then worst.hp = math.min(worst.maxhp, worst.hp + 3 * self:skill(s, "Engineering") * dt) end
+    s:learn(self, "Engineering", 0.004 * dt)
+  elseif s.group == "Fabrication" then
+    -- one scrap makes five rounds
+    self.ammoAcc = (self.ammoAcc or 0) + 0.05 * self:skill(s, "Fabrication") * dt
+    if self.ammoAcc >= 1 and self.res.scrap > 0 then
+      self.res.scrap = self.res.scrap - 1
+      self.res.ammo = self.res.ammo + 5
+      self.ammoAcc = self.ammoAcc - 1
+    end
+    s:learn(self, "Fabrication", 0.004 * dt)
+  elseif SUPPORT[s.group] then
+    -- Medicine, Research, Logistics and Leadership help everyone; their
+    -- combined effort is applied once per frame in Game:applyEffort
+    self.effortNext[s.group] = (self.effortNext[s.group] or 0) + self:skill(s, s.group)
+    s:learn(self, s.group, 0.004 * dt)
   end
 end
 
--- Spots in front of the armory's issue counter.
+-- Last frame's effort from the support groups, as settlement-wide bonuses.
+function Game:applyEffort()
+  self.effort, self.effortNext = self.effortNext, {}
+  local e = self.effort
+  self.healRate = 1 + 1.2 * (e.Medicine or 0)
+  self.learnMult = self.learnBase * (1 + 0.4 * (e.Research or 0))
+  self.rationing = 1 / (1 + 0.3 * (e.Logistics or 0))
+  self.workMult = 1 + 0.2 * (e.Leadership or 0)
+end
+
+-- The armory, if one stands.
+function Game:armory()
+  for _, s in ipairs(self.structures) do
+    if s.kind == "armory" and not s.dead then return s end
+  end
+end
+
+-- Spots in front of the armory's issue counter; without an armory, gear is
+-- handed out in front of the headquarters.
 function Game:armorySlot(s)
-  if self.armory.dead then return nil end
-  local a = self.armory
+  local a = self:armory() or self.hq
   local k = s.id % 5
   return a.wx1 + 0.4 + k * 0.45, a.wy2 + 0.55
 end
@@ -639,7 +698,7 @@ end
 function Game:damageStructure(s, dmg, fx, fy)
   if s.dead or s.solid then return end
   s.hp = s.hp - dmg
-  if (s == self.hq or s == self.armory) and self.time - (s.lastWarn or -99) > 12 then
+  if (s == self.hq or s.kind == "armory") and self.time - (s.lastWarn or -99) > 12 then
     s.lastWarn = self.time
     self:message("The " .. s.name .. " is under attack!", "bad")
   end
@@ -668,12 +727,12 @@ function Game:destroyStructure(s)
   end
   self.decals[#self.decals + 1] = { kind = "rubble", bits = bits, t = 0, life = 9999 }
   if s.repairable and s.kind ~= "hq" then
-    self.ruins[#self.ruins + 1] = { kind = s.kind, x1 = s.x1, y1 = s.y1, dir = s.dir, strip = s.strip, name = s.name }
+    self.ruins[#self.ruins + 1] = { kind = s.kind, x1 = s.x1, y1 = s.y1, dir = s.dir, strip = s.strip, name = s.name, flip = s.flip }
   end
   if s == self.hq then
     self:gameOver("The " .. self.hqDef.name .. " has fallen.")
-  elseif s == self.armory then
-    self:message("The Box Truck Armory was destroyed! Mobilizing groups can no longer collect gear.", "bad")
+  elseif s.kind == "armory" then
+    self:message("The Box Truck Armory was destroyed! Mobilizing groups collect gear at the HQ now.", "bad")
   elseif (s.kind == "fence" or s.kind == "gate") and self.breachWarned ~= self.director.wave then
     self.breachWarned = self.director.wave
     self:message("The perimeter has been breached!", "bad")
@@ -701,6 +760,92 @@ local function cellOccupied(game, cx, cy)
   return false
 end
 
+----------------------------------------------------------------------------
+-- Building
+
+-- The footprint of a building of this kind centred on world point (wx, wy):
+-- its first cell and size. Flipping swaps the sides.
+function Game:footprintAt(kind, wx, wy, flip)
+  local def = S.DEFS[kind]
+  local w, h = def.w, def.h
+  if flip then w, h = h, w end
+  return math.floor(wx - w / 2 + 0.5) + 1, math.floor(wy - h / 2 + 0.5) + 1, w, h
+end
+
+-- Whether each cell of a footprint can be built on: inside the walls, clear
+-- of other buildings, the roads to the gates and anyone standing there.
+-- Returns whether all are, and a cell -> ok table.
+function Game:checkPlacement(x1, y1, w, h)
+  local cells, ok = {}, true
+  for cy = y1, y1 + h - 1 do
+    for cx = x1, x1 + w - 1 do
+      local good = cx > F_MIN and cx < F_MAX and cy > F_MIN and cy < F_MAX
+        and not self.map:structure(cx, cy) and not isRoad(cx, cy) and not cellOccupied(self, cx, cy)
+      cells[cx .. "," .. cy] = good
+      ok = ok and good
+    end
+  end
+  return ok, cells
+end
+
+-- Why a building can't be started right now, or nil if it can.
+function Game:buildBlocker()
+  if self.director.phase == "night" then return "Nobody builds at night." end
+  if self.res.scrap < S.BUILD_COST then return "Not enough scrap (" .. S.BUILD_COST .. " needed)." end
+end
+
+function Game:placeBuilding(kind, x1, y1, flip)
+  local why = self:buildBlocker()
+  if why then
+    self:message(why, "bad")
+    return false
+  end
+  local def = S.DEFS[kind]
+  local w, h = def.w, def.h
+  if flip then w, h = h, w end
+  if not self:checkPlacement(x1, y1, w, h) then
+    self:message("Can't build there.", "bad")
+    return false
+  end
+  self.res.scrap = self.res.scrap - S.BUILD_COST
+  self:addStructure(kind, x1, y1, { flip = flip })
+  self.map:computeFlow(self.hq)
+  self.minimapDirty = true
+  self:message(def.name .. " built. " .. def.group .. " can get to work.", "good")
+  -- whoever was waiting at the HQ heads over
+  for _, s in ipairs(self:groupMembers(def.group, true)) do
+    if s.state == "work" then s:goWork() end
+  end
+  return true
+end
+
+-- The building being placed: a see-through painting over a grid of its
+-- tiles, green where it can go and red where it can't.
+function Game:drawPlacement(p)
+  local ok, cells = self:checkPlacement(p.x1, p.y1, p.w, p.h)
+  ok = ok and not self:buildBlocker()
+  local ghost = S.new(p.kind, p.x1, p.y1, { flip = p.flip })
+  local sp = S.spriteFor(ghost)
+  if sp then
+    if ok then lg.setColor(1, 1, 1, 0.55) else lg.setColor(1, 0.55, 0.5, 0.55) end
+    S.drawSpriteAt(ghost, sp)
+  end
+  lg.setLineWidth(1.5)
+  for cy = p.y1, p.y1 + p.h - 1 do
+    for cx = p.x1, p.x1 + p.w - 1 do
+      local good = cells[cx .. "," .. cy]
+      local ax, ay = P(cx - 1, cy - 1)
+      local bx, by = P(cx, cy - 1)
+      local qx, qy = P(cx, cy)
+      local dx, dy = P(cx - 1, cy)
+      if good then lg.setColor(0.2, 1, 0.35, 0.22) else lg.setColor(1, 0.15, 0.1, 0.3) end
+      lg.polygon("fill", ax, ay, bx, by, qx, qy, dx, dy)
+      if good then lg.setColor(0.35, 1, 0.45, 0.85) else lg.setColor(1, 0.3, 0.2, 0.9) end
+      lg.polygon("line", ax, ay, bx, by, qx, qy, dx, dy)
+    end
+  end
+end
+
 function Game:repairWalls()
   local spent = 0
   for _, s in ipairs(self.structures) do
@@ -714,10 +859,7 @@ function Game:repairWalls()
   for i = #self.ruins, 1, -1 do
     local r = self.ruins[i]
     if self.res.scrap >= REBUILD_COST and not cellOccupied(self, r.x1, r.y1) then
-      local s = self:addStructure(r.kind, r.x1, r.y1, { dir = r.dir, strip = r.strip, repairable = true })
-      if r.kind == "armory" then self.armory = s end
-      if r.kind == "barracks" then self.barracks = s end
-      if r.kind == "hydroponics" then self.hydroponics = s end
+      self:addStructure(r.kind, r.x1, r.y1, { dir = r.dir, strip = r.strip, flip = r.flip, repairable = true })
       self.res.scrap = self.res.scrap - REBUILD_COST
       spent = spent + REBUILD_COST
       table.remove(self.ruins, i)
@@ -1145,6 +1287,7 @@ function Game:update(dt)
     self:updateFog()
   end
   self.director:update(dt)
+  self:applyEffort()
   for _, s in ipairs(self.survivors) do s:update(self, dt) end
   for _, z in ipairs(self.zombies) do
     if not z.dead then z:update(self, dt) end
@@ -1154,7 +1297,7 @@ function Game:update(dt)
   end
   self:separate()
 
-  local consumption = self:livingCount() * FOOD_PER_SURVIVOR
+  local consumption = self:livingCount() * FOOD_PER_SURVIVOR * self.rationing
   self.res.food = math.max(0, self.res.food - consumption * dt)
   local net = self.production - consumption
   self.foodRate = self.foodRate + (net - self.foodRate) * math.min(1, dt * 0.5)
@@ -1508,6 +1651,7 @@ function Game:draw(ui)
 
   -- 5. readable overlays, never darkened
   self:drawAlertMarkers()
+  if ui.placing then self:drawPlacement(ui.placing) end
   if ui.rallyMode then self:drawRally(ui.rallyMode) end
   for _, name in ipairs(D.GROUPS) do
     if self.groups[name].mobilized and ui.rallyMode ~= name then self:drawRally(name) end

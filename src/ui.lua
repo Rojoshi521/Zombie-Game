@@ -3,6 +3,7 @@
 local U = require("src.util")
 local D = require("src.data")
 local G = require("src.gfx")
+local S = require("src.structures")
 
 local lg = love.graphics
 
@@ -10,6 +11,8 @@ local UI = {
   buttons = {},
   panels = {},
   tab = "Combat",
+  groupOpen = false, -- whether the panel for UI.tab is showing
+  placing = nil, -- the building being placed: kind, flip and footprint
   rallyMode = nil,
   amove = false,
   help = false,
@@ -175,44 +178,193 @@ local function messages(game, w)
   end
 end
 
-local function groupPanel(game, w, h)
-  local pw, ph = 790, 236
-  local x, y = 10, h - ph - 10
-  panel(x, y, pw, ph)
-
-  local tx = x + 10
-  for i, name in ipairs(D.GROUPS) do
-    local members = game:groupMembers(name)
-    local label = string.format("%d  %s (%d)", i, name, #members)
-    button(tx, y + 8, 146, 26, label, function() UI.tab = name end, { active = UI.tab == name })
-    G.setc(D.GROUP_COLORS[name])
-    lg.rectangle("fill", tx + 3, y + 30, 140, 2)
-    tx = tx + 150
+-- A small drawn emblem for each group, centred on (x, y).
+local function groupIcon(name, x, y, col)
+  lg.setColor(col)
+  lg.setLineWidth(2)
+  if name == "Combat" then
+    lg.circle("line", x, y, 7)
+    lg.line(x - 11, y, x - 3, y)
+    lg.line(x + 3, y, x + 11, y)
+    lg.line(x, y - 11, x, y - 3)
+    lg.line(x, y + 3, x, y + 11)
+  elseif name == "Engineering" then
+    lg.circle("line", x, y, 5)
+    for i = 0, 5 do
+      local a = i * math.pi / 3
+      lg.line(x + math.cos(a) * 6, y + math.sin(a) * 6, x + math.cos(a) * 10, y + math.sin(a) * 10)
+    end
+  elseif name == "Scouting" then
+    lg.ellipse("line", x, y, 11, 6)
+    lg.circle("fill", x, y, 3.5)
+  elseif name == "Scavenging" then
+    lg.line(x - 7, y + 9, x + 5, y - 5)
+    lg.arc("line", "open", x + 5, y - 5, 8, math.pi * 0.75, math.pi * 1.75)
+  elseif name == "Medicine" then
+    lg.rectangle("fill", x - 3, y - 10, 6, 20)
+    lg.rectangle("fill", x - 10, y - 3, 20, 6)
+  elseif name == "Research" then
+    local pts = {}
+    for i = 0, 5 do
+      local a = i * math.pi / 3 + math.pi / 6
+      pts[#pts + 1] = x + math.cos(a) * 9
+      pts[#pts + 1] = y + math.sin(a) * 9
+    end
+    lg.polygon("line", pts)
+    lg.circle("fill", x, y, 2.5)
+  elseif name == "Agriculture" then
+    lg.push()
+    lg.translate(x, y)
+    lg.rotate(-0.7)
+    lg.ellipse("fill", 0, -2, 5, 9)
+    lg.pop()
+    lg.line(x - 7, y + 9, x, y + 1)
+  elseif name == "Fabrication" then
+    lg.line(x - 7, y + 9, x + 3, y - 3)
+    lg.push()
+    lg.translate(x + 3, y - 3)
+    lg.rotate(-0.785)
+    lg.rectangle("fill", -8, -4, 16, 7)
+    lg.pop()
+  elseif name == "Logistics" then
+    lg.rectangle("line", x - 9, y - 8, 18, 16)
+    lg.line(x - 9, y - 2, x + 9, y - 2)
+    lg.line(x, y - 8, x, y - 2)
+  elseif name == "Leadership" then
+    lg.polygon("fill", x - 10, y + 7, x - 10, y - 6, x - 5, y, x, y - 9, x + 5, y, x + 10, y - 6, x + 10, y + 7)
   end
+end
+
+UI.BAR_H = 112
+
+-- The specialization bar along the bottom: one card per group. Clicking a
+-- card (or its hotkey) opens that group's panel.
+local function specBar(game, w, h)
+  local bh = UI.BAR_H
+  local y = h - bh
+  local right = 232 -- the minimap sits at the right end
+  panel(0, y, w, bh)
+  lg.setColor(0.55, 0.38, 0.18)
+  lg.rectangle("fill", 0, y, w, 2)
+  text("SPECIALIZATION CONTROL  ·  " .. #D.GROUPS .. " GROUPS", 14, y + 7, G.font.s, COL.dim)
+
   local anyOff = false
   for _, name in ipairs(D.GROUPS) do
     if not game.groups[name].mobilized then anyOff = true end
   end
-  button(x + pw - 170, y + 8, 160, 26, anyOff and "ALARM: ALL GROUPS" or "ALL RETURN TO WORK", function()
+  button(w - right - 160, y + 4, 150, 20, anyOff and "ALARM: ALL GROUPS" or "ALL RETURN TO WORK", function()
     for _, name in ipairs(D.GROUPS) do
       if game.groups[name].mobilized ~= anyOff then game:setMobilized(name, anyOff) end
     end
-  end, { color = anyOff and { 0.45, 0.11, 0.08 } or { 0.16, 0.26, 0.14 } })
+  end, { color = anyOff and { 0.45, 0.11, 0.08 } or { 0.16, 0.26, 0.14 }, font = G.font.s })
+  text("SELECT TO MANAGE", 0, y + 7, G.font.s, COL.dim, w - right - 172, "right")
 
+  local n = #D.GROUPS
+  local gap = 5
+  local cw = (w - right - 12 - gap * (n - 1)) / n
+  local cy, ch = y + 28, bh - 36
+  local mx, my = love.mouse.getPosition()
+  local narrow = cw < 110
+  for i, name in ipairs(D.GROUPS) do
+    local cx = 10 + (i - 1) * (cw + gap)
+    local grp = game.groups[name]
+    local open = UI.groupOpen and UI.tab == name
+    local hover = U.inRect(mx, my, cx, cy, cw, ch)
+    UI.buttons[#UI.buttons + 1] = { x = cx, y = cy, w = cw, h = ch, fn = function()
+      if open then UI.groupOpen = false else UI.tab, UI.groupOpen = name, true end
+    end }
+    local base = open and 0.2 or (hover and 0.17 or 0.13)
+    lg.setColor(base, base * 0.95, base * 0.88, 0.97)
+    lg.rectangle("fill", cx, cy, cw, ch, 4)
+    lg.setColor(open and COL.amber or COL.border)
+    lg.setLineWidth(open and 2 or 1)
+    lg.rectangle("line", cx + 0.5, cy + 0.5, cw - 1, ch - 1, 4)
+    local col = D.GROUP_COLORS[name]
+    lg.setColor(col[1], col[2], col[3], 0.9)
+    lg.rectangle("fill", cx + 4, cy + ch - 4, cw - 8, 2)
+
+    -- hotkey, and a status light: green working, pulsing red mobilized
+    text(tostring(i % 10), cx + 6, cy + 4, G.font.s, COL.dim)
+    if grp.mobilized then
+      local p = 0.6 + 0.4 * math.sin(game.time * 6)
+      lg.setColor(0.95, 0.3, 0.2, p)
+    else
+      lg.setColor(0.45, 0.8, 0.4)
+    end
+    lg.circle("fill", cx + cw - 9, cy + 9, 3.5)
+
+    groupIcon(name, cx + cw / 2, cy + 17, col)
+    text(name, cx, cy + 32, narrow and G.font.s or G.font.m, COL.text, cw, "center")
+    local members = game:groupMembers(name)
+    local down = 0
+    for _, s in ipairs(members) do
+      if s.state == "downed" then down = down + 1 end
+    end
+    local sub, subCol = #members .. " ASSIGNED", COL.dim
+    if down > 0 then
+      sub, subCol = sub .. " · " .. down .. " DOWN", COL.bad
+    elseif #members > 0 and not game:canWork(name) then
+      sub, subCol = "NO BUILDING", COL.alert
+    end
+    text(sub, cx, cy + 52, G.font.s, subCol, cw, "center")
+  end
+end
+
+local function groupPanel(game, w, h)
+  if not UI.groupOpen then return end
   local name = UI.tab
   local grp = game.groups[name]
   local members = game:groupMembers(name)
+  local rows = math.max(1, math.ceil(math.min(#members, 8) / 2))
+  local pw, ph = 790, 182 + rows * 20 + (#members > 8 and 16 or 0)
+  local x, y = 10, h - UI.BAR_H - ph - 8
+  panel(x, y, pw, ph)
+
+  groupIcon(name, x + 22, y + 20, D.GROUP_COLORS[name])
+  text(name:upper(), x + 40, y + 10, G.font.l, COL.text)
+  local nw = G.font.l:getWidth(name:upper())
+  local status, scol = "Working: " .. D.GROUP_WORKPLACE[name], COL.good
+  if grp.mobilized then
+    status, scol = "MOBILIZED", COL.bad
+  elseif not game:canWork(name) then
+    status, scol = "No building yet: waiting at the HQ, doing nothing", COL.alert
+  end
+  text(status, x + 52 + nw, y + 14, G.font.m, scol)
+  button(x + pw - 34, y + 8, 24, 24, "x", function() UI.groupOpen = false end)
+
   local ready, downed, armed = 0, 0, 0
   for _, s in ipairs(members) do
     if s.state == "downed" then downed = downed + 1 else ready = ready + 1 end
     if s.weapon then armed = armed + 1 end
   end
   local cy = y + 42
-  local status = grp.mobilized and "MOBILIZED" or ("Working: " .. D.GROUP_WORKPLACE[name])
-  text(string.format("%d active · %d down · %d armed", ready, downed, armed), x + 12, cy, G.font.m, COL.dim)
-  text(status, x + 12, cy, G.font.m, grp.mobilized and COL.bad or COL.good, pw - 24, "right")
+  text(string.format("%d assigned · %d active · %d down · %d armed", #members, ready, downed, armed),
+    x + 12, cy, G.font.m, COL.dim)
 
+  -- the group's foundations, each placed on the map like a StarCraft building
   cy = cy + 24
+  local kinds = S.FOUNDATIONS[name]
+  text("Build (" .. S.BUILD_COST .. " scrap):", x + 12, cy + 5, G.font.s, COL.dim)
+  if #kinds == 0 then
+    text("Leadership has no building; it works from the headquarters.", x + 128, cy + 5, G.font.s, COL.dim)
+  end
+  local why = game:buildBlocker()
+  local bx = x + 128
+  local bw = (pw - 140 - 8) / 3
+  for _, kind in ipairs(kinds) do
+    local def = S.DEFS[kind]
+    local built = 0
+    for _, b in ipairs(game:buildingsOf(name)) do
+      if b.kind == kind then built = built + 1 end
+    end
+    button(bx, cy, bw, 24, def.name .. (built > 0 and (" (" .. built .. ")") or ""), function()
+      UI.placing = { kind = kind, flip = false }
+      UI.rallyMode, UI.amove = nil, false
+    end, { disabled = why ~= nil, font = G.font.s, active = UI.placing and UI.placing.kind == kind })
+    bx = bx + bw + 4
+  end
+
+  cy = cy + 32
   text("Loadout:", x + 12, cy + 5, G.font.m, COL.dim)
   local lx = x + 78
   for _, key in ipairs(D.LOADOUTS) do
@@ -236,9 +388,12 @@ local function groupPanel(game, w, h)
 
   cy = cy + 40
   local colW = (pw - 24) / 2
+  if #members == 0 then
+    text("Nobody works here. Select a survivor and reassign them from their profile.", x + 12, cy, G.font.s, COL.dim)
+  end
   for i, s in ipairs(members) do
-    if i > 10 then
-      text("+" .. (#members - 10) .. " more", x + 12, y + ph - 18, G.font.s, COL.dim)
+    if i > 8 then
+      text("+" .. (#members - 8) .. " more", x + 12, y + ph - 18, G.font.s, COL.dim)
       break
     end
     local col = (i - 1) % 2
@@ -276,7 +431,7 @@ local function profilePanel(game, w, h)
   end
 
   local s = sel[1]
-  local ph = 530
+  local ph = 562
   panel(x, y, pw, ph)
   local cy = y + 10
   text(s.name, x + 12, cy, G.font.l)
@@ -312,22 +467,13 @@ local function profilePanel(game, w, h)
   text("APTITUDE  /  LEARNED SKILL", x + 12, cy, G.font.s, COL.dim)
   cy = cy + 16
   for _, gname in ipairs(D.GROUPS) do
-    text(gname, x + 12, cy, G.font.m, COL.text)
-    text("talent " .. s.apt[gname] .. "/10", x + 100, cy + 1, G.font.s, COL.amber)
-    G.bar(x + 175, cy + 6, pw - 225, 5, s.prof[gname] / 10, D.GROUP_COLORS[gname], { 0.2, 0.18, 0.15, 1 })
-    text(string.format("%.1f", s.prof[gname]), x + pw - 46, cy + 1, G.font.s, COL.text, 34, "right")
-    cy = cy + 19
+    text(gname, x + 12, cy, G.font.s, gname == s.group and COL.amber or COL.text)
+    text("talent " .. s.apt[gname] .. "/10", x + 100, cy, G.font.s, COL.amber)
+    G.bar(x + 175, cy + 5, pw - 225, 5, s.prof[gname] / 10, D.GROUP_COLORS[gname], { 0.2, 0.18, 0.15, 1 })
+    text(string.format("%.1f", s.prof[gname]), x + pw - 46, cy, G.font.s, COL.text, 34, "right")
+    cy = cy + 16
   end
-  local others = {}
-  for _, a in ipairs(D.APTITUDES) do
-    local inGroups = false
-    for _, gname in ipairs(D.GROUPS) do
-      if gname == a then inGroups = true end
-    end
-    if not inGroups then others[#others + 1] = a .. " " .. s.apt[a] end
-  end
-  text("Other talents: " .. table.concat(others, " · "), x + 12, cy, G.font.s, COL.dim, pw - 24)
-  cy = cy + 46
+  cy = cy + 8
 
   text("COMBAT ATTRIBUTES", x + 12, cy, G.font.s, COL.dim)
   cy = cy + 15
@@ -342,19 +488,21 @@ local function profilePanel(game, w, h)
   end
   cy = cy + 54
 
-  text("Reassign to:", x + 12, y + ph - 56, G.font.s, COL.dim)
-  local bx = x + 12
+  text("Reassign to:", x + 12, cy, G.font.s, COL.dim)
+  cy = cy + 16
   local bw = (pw - 24 - 8) / 3
+  local k = 0
   for _, other in ipairs(D.GROUPS) do
     if other ~= s.group then
-      button(bx, y + ph - 38, bw, 26, other, function()
+      local bx, by = x + 12 + (k % 3) * (bw + 4), cy + math.floor(k / 3) * 26
+      k = k + 1
+      button(bx, by, bw, 22, other, function()
         s.group = other
         if s:isActive() then
           if game.groups[other].mobilized then s:mobilize(game) else s:returnToWork(game) end
         end
         game:message(s.name .. " now works with " .. other .. ".")
       end, { disabled = not s:isActive(), font = G.font.s })
-      bx = bx + bw + 4
     end
   end
 end
@@ -483,8 +631,8 @@ end
 
 local function minimap(game, w, h)
   if game.minimapDirty or not UI.mmImg then rebuildMinimap(game) end
-  local mw, mh = 260, 130
-  local x, y = w - mw - 14, h - mh - 14
+  local mw, mh = 200, 100
+  local x, y = w - mw - 14, h - mh - 6
   panel(x - 4, y - 4, mw + 8, mh + 8)
   local W = game.MAP_W
   local m = { x = x, y = y, w = mw, h = mh, cx = x + mw / 2, kx = mw / 2 / W, ky = mh / 2 / W }
@@ -534,8 +682,9 @@ local HELP = {
   { "A, then left-click", "Attack-move: fight anything met on the way" },
   { "Right-click a zombie", "Focus fire" },
   { "Right-click a building", "Search it for loot (carry it home to use it)" },
+  { "Group panel: Build", "Place a building · R turns it · right-click cancels" },
   { "H / S / F", "Hold position · Stop · Fall back to rally point" },
-  { "1 - 4", "Switch group tab (double-tap selects the group)" },
+  { "1 - 9, 0", "Open a group's panel (double-tap selects the group)" },
   { "M", "Mobilize / return the current group" },
   { "Arrows, screen edge, middle-drag", "Pan the camera" },
   { "Mouse wheel", "Zoom" },
@@ -544,7 +693,7 @@ local HELP = {
 }
 
 local function helpOverlay(w, h)
-  local pw, ph = 620, 420
+  local pw, ph = 620, 444
   local x, y = (w - pw) / 2, (h - ph) / 2
   panel(x, y, pw, ph)
   text("HOW TO SURVIVE", x, y + 14, G.font.xl, COL.amber, pw, "center")
@@ -568,15 +717,21 @@ function UI.draw(game)
   topBar(game, w)
   messages(game, w)
   alertBanner(game, w, h)
+  specBar(game, w, h)
   groupPanel(game, w, h)
   profilePanel(game, w, h)
   minimap(game, w, h)
 
-  if UI.rallyMode then
+  if UI.placing then
+    local why = game:buildBlocker()
+    text(why or ("Placing the " .. S.DEFS[UI.placing.kind].name ..
+      ": left-click to build · R to turn it · right-click or Esc to cancel"),
+      0, 116, G.font.m, why and COL.bad or COL.amber, w, "center")
+  elseif UI.rallyMode then
     text("Click the map to place the " .. UI.rallyMode .. " rally point · right-click to cancel",
-      0, h - 290, G.font.m, COL.amber, w, "center")
+      0, 116, G.font.m, COL.amber, w, "center")
   elseif UI.amove then
-    text("ATTACK-MOVE: left-click a destination", 0, h - 290, G.font.m, COL.bad, w, "center")
+    text("ATTACK-MOVE: left-click a destination", 0, 116, G.font.m, COL.bad, w, "center")
   end
   if game.paused and not game.over then
     text("PAUSED", 0, h * 0.4, G.font.xl, COL.amber, w, "center")

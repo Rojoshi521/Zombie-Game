@@ -17,7 +17,7 @@ local autotest
 
 local function startGame(hqDef)
   game = Game.new(hqDef)
-  UI.tab, UI.rallyMode, UI.amove, UI.help = "Combat", nil, false, false
+  UI.tab, UI.groupOpen, UI.rallyMode, UI.amove, UI.help, UI.placing = "Combat", false, nil, false, false, nil
   screen = "game"
 end
 
@@ -95,11 +95,14 @@ end
 
 -- Debug view: every painted sprite at game scale over its 4x4 footprint.
 local calibrate = false
+local calibrateOnly -- sprite ids named after --calibrate, if any
 
 local function drawCalibration()
   lg.clear(0.12, 0.12, 0.14)
   local ids = {}
-  for id in pairs(D.SPRITES) do ids[#ids + 1] = id end
+  for id in pairs(D.SPRITES) do
+    if not calibrateOnly or calibrateOnly[id] then ids[#ids + 1] = id end
+  end
   table.sort(ids)
   for i, id in ipairs(ids) do
     local sp = S.sprites[id]
@@ -133,7 +136,14 @@ function love.load(args)
   S.loadProps()
   require("src.units").load()
   for i, a in ipairs(args or {}) do
-    if a == "--calibrate" then calibrate = true end
+    if a == "--calibrate" then
+      calibrate = true
+      for j = i + 1, #args do
+        if args[j]:sub(1, 2) == "--" then break end
+        calibrateOnly = calibrateOnly or {}
+        calibrateOnly[args[j]] = true
+      end
+    end
     if a == "--autotest" then autotest = { t = 0, step = 1, hq = D.HQS[1] } end
     if a == "--hq" and autotest then
       for _, hq in ipairs(D.HQS) do
@@ -184,6 +194,7 @@ local function runAutotest(dt)
     { 0.8, function() startGame(a.hq) end },
     { 2.0, function()
       game.selection = { game.survivors[1] }
+      UI.tab, UI.groupOpen = "Medicine", true
       lg.captureScreenshot("shot_base.png")
     end },
     { 2.1, function()
@@ -193,7 +204,31 @@ local function runAutotest(dt)
     { 2.2, function()
       lg.captureScreenshot("shot_units.png")
     end },
-    { 2.3, function() game.camera.zoom = a.zoom end },
+    { 2.3, function()
+      -- a building in hand, half over the HQ: its grid shows red there
+      game.camera.zoom = a.zoom
+      local B = game.B
+      UI.tab, UI.groupOpen = "Medicine", true
+      UI.placing = { kind = "laundromat", fixed = true, x1 = B + 25, y1 = B + 21, w = 3, h = 3 }
+    end },
+    { 2.34, function() lg.captureScreenshot("shot_place.png") end },
+    { 2.38, function()
+      -- the player's first pick, then (with scrap from nowhere) enough of a
+      -- base for the rest of the test; one of them turned
+      local B = game.B
+      UI.placing, UI.groupOpen = nil, false
+      game:placeBuilding("garden", B + 16, B + 26)
+      game.res.scrap = game.res.scrap + 5 * 40
+      game:placeBuilding("armory", B + 28, B + 17)
+      game:placeBuilding("barracks", B + 29, B + 29)
+      game:placeBuilding("lookout", B + 23, B + 16)
+      game:placeBuilding("salvage", B + 16, B + 31)
+      game:placeBuilding("laundromat", B + 30, B + 33, true)
+      a.camX, a.camY = game.camera.x, game.camera.y
+      game.camera.x, game.camera.y = Iso.toScreen(B + 26, B + 28)
+    end },
+    { 2.42, function() lg.captureScreenshot("shot_yard.png") end },
+    { 2.46, function() game.camera.x, game.camera.y = a.camX, a.camY end },
     { 2.4, function()
       -- send the scouts and scavengers to search the nearest building outside
       game.selection = {}
@@ -266,7 +301,7 @@ local function runAutotest(dt)
     local states = {}
     for _, s in ipairs(game.survivors) do states[#states + 1] = s.state end
     local site = a.site and a.site.site
-    print(string.format("AUTOTEST t=%.0f phase=%s wave=%d waveZ=%d allZ=%d kills=%d living=%d food=%.1f ammo=%d scrap=%d rifles=%d over=%s site=%s(%s %.1f/%.1f) states=%s",
+    print(string.format("AUTOTEST fps=" .. love.timer.getFPS() .. " t=%.0f phase=%s wave=%d waveZ=%d allZ=%d kills=%d living=%d food=%.1f ammo=%d scrap=%d rifles=%d over=%s site=%s(%s %.1f/%.1f) states=%s",
       game.time, game.director.phase, game.director.wave, game:waveZombieCount(), #game.zombies, game.stats.kills,
       game:livingCount(), game.res.food, game.res.ammo, game.res.scrap, game.stock.rifle,
       tostring(game.over and game.over.reason), a.site and a.site.name or "-", site and tostring(site.searched) or "-",
@@ -286,6 +321,12 @@ function love.update(dt)
   if screen == "game" and game then
     updateCamera(dt)
     game:update(dt)
+    -- the building being placed follows the mouse, snapped to the grid
+    local p = UI.placing
+    if p and not p.fixed then
+      local wx, wy = game.camera:screenToWorld(love.mouse.getPosition())
+      p.x1, p.y1, p.w, p.h = game:footprintAt(p.kind, wx, wy, p.flip)
+    end
   end
 end
 
@@ -331,8 +372,8 @@ function love.mousepressed(x, y, b)
     return
   end
   if b == 2 then
-    if UI.rallyMode or UI.amove then
-      UI.rallyMode, UI.amove = nil, false
+    if UI.placing or UI.rallyMode or UI.amove then
+      UI.placing, UI.rallyMode, UI.amove = nil, nil, false
       return
     end
     local z = game:zombieAt(x, y)
@@ -349,6 +390,14 @@ function love.mousepressed(x, y, b)
   end
   if b == 1 then
     local wx, wy = game.camera:screenToWorld(x, y)
+    local p = UI.placing
+    if p then
+      -- Shift keeps the same building in hand for another
+      if game:placeBuilding(p.kind, p.x1, p.y1, p.flip) and not love.keyboard.isDown("lshift", "rshift") then
+        UI.placing = nil
+      end
+      return
+    end
     if UI.rallyMode then
       local grp = game.groups[UI.rallyMode]
       grp.rallyX, grp.rallyY = wx, wy
@@ -429,8 +478,11 @@ function love.keypressed(key)
     game.paused = not game.paused
   elseif key == "escape" then
     if UI.help then UI.help = false
-    elseif UI.rallyMode or UI.amove then UI.rallyMode, UI.amove = nil, false
+    elseif UI.placing or UI.rallyMode or UI.amove then UI.placing, UI.rallyMode, UI.amove = nil, nil, false
+    elseif UI.groupOpen then UI.groupOpen = false
     else game.selection = {} end
+  elseif key == "r" and UI.placing then
+    UI.placing.flip = not UI.placing.flip
   elseif key == "f1" or key == "/" then
     UI.help = not UI.help
   elseif key == "a" then
@@ -443,9 +495,19 @@ function love.keypressed(key)
     game:orderFallBack()
   elseif key == "m" then
     game:setMobilized(UI.tab, not game.groups[UI.tab].mobilized)
-  elseif D.GROUPS[tonumber(key) or 0] then
-    local name = D.GROUPS[tonumber(key)]
-    UI.tab = name
-    if double then game:selectGroup(name) end
+  elseif tonumber((key:gsub("^kp", ""))) then
+    -- 1-9 and 0 open the matching card on the specialization bar; pressing
+    -- it again closes it, a quick double-tap selects the whole group
+    local n = tonumber((key:gsub("^kp", "")))
+    local name = D.GROUPS[n == 0 and 10 or n]
+    if not name then return end
+    if double then
+      UI.tab, UI.groupOpen = name, true
+      game:selectGroup(name)
+    elseif UI.groupOpen and UI.tab == name then
+      UI.groupOpen = false
+    else
+      UI.tab, UI.groupOpen = name, true
+    end
   end
 end

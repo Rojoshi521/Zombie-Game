@@ -6,24 +6,41 @@ D.APTITUDES = {
   "Research", "Agriculture", "Fabrication", "Logistics", "Leadership",
 }
 
--- The groups that exist in this prototype. The other six come later.
-D.GROUPS = { "Combat", "Scouting", "Scavenging", "Agriculture" }
+-- The ten specialization groups, in hotkey order (1-9, then 0).
+D.GROUPS = D.APTITUDES
 
 D.GROUP_COLORS = {
   Combat = { 0.70, 0.24, 0.19 },
+  Engineering = { 0.60, 0.62, 0.68 },
   Scouting = { 0.32, 0.56, 0.78 },
   Scavenging = { 0.82, 0.60, 0.26 },
+  Medicine = { 0.45, 0.80, 0.62 },
+  Research = { 0.62, 0.48, 0.85 },
   Agriculture = { 0.43, 0.60, 0.27 },
+  Fabrication = { 0.80, 0.42, 0.20 },
+  Logistics = { 0.36, 0.70, 0.72 },
+  Leadership = { 0.88, 0.76, 0.40 },
 }
 
+-- What each group does at its buildings.
 D.GROUP_WORKPLACE = {
-  Combat = "School Bus Barracks (drilling)",
-  Scouting = "Lifeguard Tower (on watch)",
-  Scavenging = "Garbage Truck (sorting scrap)",
-  Agriculture = "Garden and Hydroponics (farming)",
+  Combat = "drilling",
+  Engineering = "patching walls and buildings",
+  Scouting = "on watch",
+  Scavenging = "sorting scrap",
+  Medicine = "treating the wounded (faster healing)",
+  Research = "studying (everyone learns faster)",
+  Agriculture = "farming",
+  Fabrication = "turning scrap into ammo",
+  Logistics = "rationing (less food eaten)",
+  Leadership = "at the HQ (all work goes faster)",
 }
 
-D.GROUP_LOADOUT = { Combat = "rifle", Scouting = "pistol", Scavenging = "improvised", Agriculture = "improvised" }
+D.GROUP_LOADOUT = {
+  Combat = "rifle", Engineering = "improvised", Scouting = "pistol", Scavenging = "improvised",
+  Medicine = "pistol", Research = "improvised", Agriculture = "improvised", Fabrication = "improvised",
+  Logistics = "improvised", Leadership = "pistol",
+}
 
 -- How far each survivor sees, in tiles. Scouts see much further.
 D.VISION = 5
@@ -262,6 +279,26 @@ D.SPRITES = {
   salvage_garden = { ax = 400, ay = 290, scale = 0.36, foot = 4 },
   school_bus_barracks = { ax = 395, ay = 300, scale = 0.36, foot = 3 },
   hydroponic_shipping_containers = { ax = 422, ay = 280, scale = 0.36, foot = 3 },
+  laundromat_sterilization_ward = { ax = 398, ay = 375, scale = 0.36, foot = 3 },
+  derelict_arcade_lab = { ax = 365, ay = 352, scale = 0.36, foot = 3 },
+  vending_machine_supply_wall = { ax = 398, ay = 375, scale = 0.36, foot = 3 },
+  pizza_parlor_forge = { ax = 389, ay = 310, scale = 0.36, foot = 3 },
+  tow_truck_workshop = { ax = 398, ay = 275, scale = 0.36, foot = 3 },
+  trailer_blockade = { ax = 396, ay = 254, scale = 0.36, foot = 3 },
+  excavator_graveyard = { ax = 395, ay = 290, scale = 0.36, foot = 3 },
+  truck_stop = { ax = 396, ay = 356, scale = 0.36, foot = 3 },
+  billboard_observation_nest = { ax = 348, ay = 344, scale = 0.36, foot = 3 },
+  storm_chaser_van = { ax = 398, ay = 322, scale = 0.36, foot = 3 },
+  airport_baggage_carousel = { ax = 398, ay = 295, scale = 0.36, foot = 3 },
+  storage_lock_labyrinth = { ax = 398, ay = 346, scale = 0.36, foot = 3 },
+  ice_cream_truck_pharmacy = { ax = 398, ay = 330, scale = 0.36, foot = 3 },
+  bloodmobile_clinic = { ax = 398, ay = 323, scale = 0.36, foot = 3 },
+  aquarium_containment_lab = { ax = 398, ay = 378, scale = 0.36, foot = 3 },
+  bowling_alley_test_facility = { ax = 398, ay = 383, scale = 0.36, foot = 3 },
+  pawnshop_gunsmith = { ax = 398, ay = 305, scale = 0.36, foot = 3 },
+  soda_cannery_factory = { ax = 395, ay = 328, scale = 0.36, foot = 3 },
+  parking_garage_stockpile = { ax = 398, ay = 377, scale = 0.36, foot = 3 },
+  drive_thru_bank_vault = { ax = 398, ay = 370, scale = 0.36, foot = 3 },
   farmhouse = { ax = 398, ay = 271, scale = 0.48 },
   watertower = { ax = 392, ay = 336, scale = 0.48 },
   ferriswheel = { ax = 393, ay = 346, scale = 0.48 },

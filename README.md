@@ -22,10 +22,23 @@ or drag the project folder onto `love.exe`.
   (+30% food), Drained Water Tower (double warning time), Defunct Ferris Wheel (+50% scrap),
   Half-Working Casino (chance of a bonus cache) and Worn-Down Broadcast Station (40% faster
   learning).
-- **Four specialization groups**: Combat drills at the School Bus Barracks and draws gear from
-  the Box Truck Armory; Scouting keeps watch from the Lifeguard Tower and sees much further in
-  the field; Scavenging sorts scrap at the Garbage Compactor Truck and searches buildings
-  fastest; Agriculture farms the Salvage Garden and the Hydroponic Container.
+- **Build your own base**: a run starts with only the headquarters inside the walls and scrap
+  for one building, so the first choice is the player's. Each group's panel lists its three
+  foundations from the design bible (40 scrap each); pick one and place it on the grid like a
+  StarCraft building, its tiles green where it fits and red where it doesn't. R turns it
+  (the painting is mirrored), Shift-click places another, right-click cancels. Nothing is built
+  at night. A group without a building waits at the HQ and does nothing; Leadership needs none.
+  Without an armory, gear is handed out at the HQ.
+- **Ten specialization groups**, one survivor in each at the start, managed from the
+  specialization bar along the bottom of the screen. Combat drills at the School Bus Barracks
+  and draws gear from the Box Truck Armory; Scouting keeps watch from the Lifeguard Tower and
+  sees much further in the field; Scavenging sorts scrap at the Garbage Compactor Truck and
+  searches buildings fastest; Agriculture farms the Salvage Garden and the Hydroponic Container;
+  Engineering patches walls for free at the Tow-Truck Workshop; Medicine speeds healing from
+  the Laundromat Sterilization Ward; Research speeds learning in the Derelict Arcade Lab;
+  Fabrication turns scrap into ammo at the Pizza Parlor Forge; Logistics cuts food use at the
+  Vending Machine Supply Wall; Leadership (which has no foundation) makes all work faster from
+  the headquarters.
 - **A ruined town, new every run**: streets, houses, shops, lots and landmarks (jail, zoo,
   soccer field) around the walls, with wrecked and burning cars and lurking packs of infected.
   It starts under fog of war. Scouts reveal what each building holds; anyone can search one
@@ -50,7 +63,8 @@ or drag the project folder onto `love.exe`.
 | Right-click | Move · right-click a zombie to focus fire · right-click a town building to search it |
 | A, then left-click | Attack-move |
 | H / S / F | Hold position · Stop · Fall back to rally point |
-| 1 - 4 | Group tab (double-tap selects the group) |
+| 1 - 9, 0 | Open that group's panel; again to close (double-tap selects the group) |
+| Specialization bar (bottom) | Click a group card to open or close its panel |
 | Minimap (bottom right) | Click or drag to move the camera |
 | M | Mobilize / return the current group |
 | Arrows, screen edge, middle-drag | Pan |
@@ -93,13 +107,21 @@ set one file per run; each run merges into the index. Each group wears one portr
 `worker*`, Agriculture `farmer*`. Zombie kinds pick from `zombie1-10`. Figures face right and
 are mirrored to face left; walking and attacking bob and lean the whole figure.
 
+A group can instead wear a walk sheet: 4 columns (front, side, three-quarter front, back) by 2
+rows (left foot forward, right foot forward), each figure facing screen-right on a plain
+background, with an optional label under each figure. `love . --process-units --sheet soldier
+"<sheet PNG>"` cuts it into `soldier_<view><1|2>` frames at one shared scale, and
+`Units.WALK_SET` in `src/units.lua` assigns it to a group (Combat wears `soldier`). Survivors
+then show the view matching their heading and alternate the two stride frames as they walk.
+
 To add or update a painting:
 
 1. Render it as one building on a plain dark background, at the same camera angle as the
    existing ones, and name it in `SOURCES` in `tools/process_art.lua`.
 2. Run `love . --process-art "<folder with the source PNGs>"` to cut out the background and
    build the glow layer.
-3. Add an entry to `D.SPRITES` in `src/data.lua`, then run `love . --calibrate`. The resulting
+3. Add an entry to `D.SPRITES` in `src/data.lua`, then run `love . --calibrate [<id> ...]`
+   (naming ids shows only those paintings). The resulting
    `calibrate.png` in the save folder shows each painting over its footprint. Adjust `ax`/`ay`
    (the pixel that sits on the footprint centre) and `scale` until the building's base fits.
 

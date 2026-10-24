@@ -133,6 +133,7 @@ end
 function Survivor:faceDir(dx, dy)
   local sdx = dx - dy
   if sdx > 0.05 then self.face = 1 elseif sdx < -0.05 then self.face = -1 end
+  if math.abs(dx) + math.abs(dy) > 0.001 then self.view, self.viewFace = Units.view(dx, dy) end
 end
 
 function Survivor:walkTo(game, tx, ty)
@@ -473,13 +474,27 @@ function Survivor:draw(game)
   lg.setColor(0, 0, 0, 0.5)
   lg.ellipse("fill", sx, sy, 7, 3.5)
 
-  local id = Units.survivorId(self)
+  local id, walk = Units.survivorId(self)
   if id then
     -- the group's colour as a faint mark on the ground
     G.setc(col, 0.55)
     lg.setLineWidth(1.5)
     lg.ellipse("line", sx, sy, 6.5, 3.2)
     local h = Units.SURVIVOR_H
+    if walk then
+      -- the sheet's frames carry the stride; just a slight dip on each step
+      if self.state == "downed" then
+        id = Units.WALK_SET[self.group] .. "_side1"
+        Units.draw(id, sx - self.face * 4, sy, self.face, h, 0, 0, 1, { 0.75, 0.7, 0.68 }, 0.35)
+        return
+      end
+      local face = self.viewFace or self.face
+      local lift = self.moving and math.abs(math.cos(self.anim * 10)) * 1.2 or 0
+      local lean = self.attackAnim and 0.08 or 0
+      Units.draw(id, sx, sy, face, h, lean, lift, 0, nil, 0.35)
+      if self.hurtFlash then Units.flash(id, sx, sy, face, h, lean, lift, self.hurtFlash * 4) end
+      return
+    end
     if self.state == "downed" then
       Units.draw(id, sx - self.face * 4, sy, self.face, h, 0, 0, 1, { 0.75, 0.7, 0.68 }, 0.35)
       return

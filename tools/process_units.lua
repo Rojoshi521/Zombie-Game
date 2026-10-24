@@ -3,6 +3,7 @@
 -- to sprite size.
 --
 --   love . --process-units "<folder or PNG>" ["<another>" ...]
+--   love . --process-units --sheet <name> "<walk sheet PNG>"
 --
 -- Every <name><n>.png (combat1.png, zombie7.png, ...) becomes
 -- assets/units/<name><n>.png, with each sprite's size, foot anchor and head
@@ -32,9 +33,9 @@ local function listPngs(dir)
   return files
 end
 
-local function processOne(path, file, outDir)
-  local hasDirt = not file:lower():match("^zombie") -- the survivors stand on a patch of ground
-  local img = love.image.newImageData(love.filesystem.newFileData(readFile(path), file))
+-- Cuts the figure out of img. Returns the cut-out ImageData, its size, and
+-- the foot and head x positions in it.
+local function cutFigure(img, hasDirt, footMode)
   local w, h = img:getDimensions()
   local px = ffi.cast("uint8_t*", img:getFFIPointer())
   local n = w * h
@@ -242,15 +243,34 @@ local function processOne(path, file, outDir)
     end
     return cnt > 0 and sum / cnt or cw / 2
   end
-  local footX = band(ch * 0.9, ch - 1)
+  -- midway between the outermost solid pixels of a band: in a stride the
+  -- feet are far apart, and the body sits between them
+  local function span(fy0, fy1)
+    local a, b
+    for y = math.floor(fy0), math.floor(fy1) do
+      for x = 0, cw - 1 do
+        if cp[(y * cw + x) * 4 + 3] > 0 then
+          a = math.min(a or x, x)
+          b = math.max(b or x, x)
+        end
+      end
+    end
+    return a and (a + b) / 2 or cw / 2
+  end
+  local footX = footMode == "span" and span(ch * 0.85, ch - 1) or band(ch * 0.9, ch - 1)
   local headX = band(0, ch * 0.08)
+  return cut, cw, ch, footX, headX
+end
 
+-- Shrinks a cut-out by k and writes it as assets/units/<id>.png. u is the
+-- height of a whole standing figure in the output, for frames of a sheet
+-- that are drawn at one shared scale.
+local function emit(cut, cw, ch, footX, headX, k, id, outDir, u)
   -- downscale on the GPU; "replace" keeps straight (non-premultiplied) alpha
   local image = love.graphics.newImage(cut, { mipmaps = true })
   image:setFilter("linear", "linear")
   image:setMipmapFilter("linear")
-  local k = OUT_H / ch
-  local ow, oh = math.max(1, math.floor(cw * k + 0.5)), OUT_H
+  local ow, oh = math.max(1, math.floor(cw * k + 0.5)), math.max(1, math.floor(ch * k + 0.5))
   local canvas = love.graphics.newCanvas(ow, oh)
   love.graphics.setCanvas(canvas)
   love.graphics.clear(0, 0, 0, 0)
@@ -260,24 +280,61 @@ local function processOne(path, file, outDir)
   love.graphics.setBlendMode("alpha")
   love.graphics.setCanvas()
 
-  local id = file:lower():gsub("%.png$", "")
   local outData = canvas:newImageData()
   writeFile(outDir .. "/" .. id .. ".png", outData:encode("png"):getString())
   outData:release()
   canvas:release()
   image:release()
   cut:release()
-  img:release()
   collectgarbage()
-  print(string.format("%-10s %3dx%-3d  from %dx%d", id, ow, oh, cw, ch))
-  return id, {
-    w = ow, h = oh,
+  print(string.format("%-14s %3dx%-3d  from %dx%d", id, ow, oh, cw, ch))
+  return {
+    w = ow, h = oh, u = u,
     ax = math.floor(footX * k + 0.5), ay = oh - math.floor(3 * k + 0.5),
     hx = math.floor(headX * k + 0.5), hy = math.floor(ch * 0.06 * k + 0.5),
   }
 end
 
--- Arguments are folders or single PNGs. LÖVE runs out of memory after a few
+local function processOne(path, file, outDir)
+  local hasDirt = not file:lower():match("^zombie") -- the survivors stand on a patch of ground
+  local img = love.image.newImageData(love.filesystem.newFileData(readFile(path), file))
+  local cut, cw, ch, footX, headX = cutFigure(img, hasDirt)
+  img:release()
+  local id = file:lower():gsub("%.png$", "")
+  return id, emit(cut, cw, ch, footX, headX, OUT_H / ch, id, outDir)
+end
+
+-- A walk sheet: 4 columns (front, side, three-quarter front, back) by 2
+-- rows (left foot forward, right foot forward) on a plain background, each
+-- figure facing screen-right. Cells become <name>_<view><row>.
+local SHEET_VIEWS = { "front", "side", "back", "q" }
+
+local function processSheet(path, name, outDir, index)
+  local img = love.image.newImageData(love.filesystem.newFileData(readFile(path), "sheet.png"))
+  local w, h = img:getDimensions()
+  local cw, chh = math.floor(w / 4), math.floor(h / 2)
+  local fig = math.floor(chh * 0.86) -- the label under each figure is cropped off
+  local cuts, tallest = {}, 0
+  for row = 1, 2 do
+    for col = 1, 4 do
+      local cell = love.image.newImageData(cw, fig)
+      cell:paste(img, 0, 0, (col - 1) * cw, (row - 1) * chh, cw, fig)
+      local c = { cutFigure(cell, false, "span") }
+      cell:release()
+      c.id = name .. "_" .. SHEET_VIEWS[col] .. row
+      cuts[#cuts + 1] = c
+      tallest = math.max(tallest, c[3])
+    end
+  end
+  img:release()
+  -- one scale for every frame, so the figure does not grow and shrink as it walks
+  local k = OUT_H / tallest
+  for _, c in ipairs(cuts) do
+    index[c.id] = emit(c[1], c[2], c[3], c[4], c[5], k, c.id, outDir, OUT_H)
+  end
+end
+
+-- Arguments are folders or single PNGs. LÃ–VE runs out of memory after a few
 -- dozen full-size portraits in one go, so a big batch can be fed one file per
 -- run: each run merges its sprites into the existing index.
 return function(paths)
@@ -288,9 +345,17 @@ return function(paths)
   local index = {}
   local ok, old = pcall(dofile, outDir .. "/index.lua")
   if ok and type(old) == "table" then index = old end
+  local sheetName
   for _, path in ipairs(paths) do
     local files = {}
-    if path:lower():match("%.png$") then
+    if path == "--sheet" then
+      sheetName = true
+    elseif sheetName == true then
+      sheetName = path
+    elseif sheetName then
+      processSheet(path, sheetName, outDir, index)
+      sheetName = nil
+    elseif path:lower():match("%.png$") then
       local dir, file = path:match("^(.*)[/\\]([^/\\]+)$")
       files[1] = { dir, file }
     else
@@ -310,8 +375,8 @@ return function(paths)
   local lines = { "-- generated by tools/process_units.lua: w, h, foot anchor (ax, ay), head (hx, hy)", "return {" }
   for _, id in ipairs(ids) do
     local i = index[id]
-    lines[#lines + 1] = string.format("  %s = { w = %d, h = %d, ax = %d, ay = %d, hx = %d, hy = %d },",
-      id, i.w, i.h, i.ax, i.ay, i.hx, i.hy)
+    lines[#lines + 1] = string.format("  %s = { w = %d, h = %d, ax = %d, ay = %d, hx = %d, hy = %d%s },",
+      id, i.w, i.h, i.ax, i.ay, i.hx, i.hy, i.u and (", u = " .. i.u) or "")
   end
   lines[#lines + 1] = "}"
   writeFile(outDir .. "/index.lua", table.concat(lines, "\n") .. "\n")

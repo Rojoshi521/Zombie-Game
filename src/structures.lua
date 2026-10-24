@@ -121,10 +121,22 @@ local function drawWall(s)
   return true
 end
 
-local function spritePos(s, sp)
+-- Draws a building's painting (or its glow layer) over its footprint,
+-- mirrored when the building is flipped.
+local function drawSprite(s, sp, img)
   local sx, sy = P(s.cx, s.cy, 0)
-  local d = sp.def
-  return sx - d.ax * d.scale, sy - d.ay * d.scale, d.scale
+  local d, k = sp.def, sp.def.scale
+  lg.draw(img or sp.img, sx, sy, 0, s.flip and -k or k, k, d.ax, d.ay)
+end
+S.drawSpriteAt = drawSprite
+
+-- The painting's on-screen box: left, top, width, height.
+local function spriteBox(s, sp)
+  local sx, sy = P(s.cx, s.cy, 0)
+  local d, k = sp.def, sp.def.scale
+  local w, h = sp.img:getWidth() * k, sp.img:getHeight() * k
+  local left = s.flip and sx - (sp.img:getWidth() - d.ax) * k or sx - d.ax * k
+  return left, sy - d.ay * k, w, h
 end
 
 -- The whole painting goes down in the ground pass so its yard lies under
@@ -132,9 +144,8 @@ end
 -- depth-sorted pass so it can stand in front of people behind it.
 function S.drawSpriteGround(s)
   local sp = S.spriteFor(s)
-  local x, y, k = spritePos(s, sp)
   lg.setColor(1, 1, 1)
-  lg.draw(sp.img, x, y, 0, k, k)
+  drawSprite(s, sp)
 end
 
 local function footprintStencil(s, m)
@@ -146,18 +157,17 @@ end
 
 local function drawSpriteBody(s)
   local sp = S.spriteFor(s)
-  local x, y, k = spritePos(s, sp)
   lg.setColor(1, 1, 1)
   if s.flat then
     -- walkable ground art (the garden): always under the people on it
-    lg.draw(sp.img, x, y, 0, k, k)
+    drawSprite(s, sp)
   else
     lg.stencil(function() footprintStencil(s, 0.45) end, "replace", 1)
     lg.setStencilTest("greater", 0)
-    lg.draw(sp.img, x, y, 0, k, k)
+    drawSprite(s, sp)
     lg.setStencilTest()
   end
-  local w, h = sp.img:getWidth() * k, sp.img:getHeight() * k
+  local x, y, w, h = spriteBox(s, sp)
   if s.fire then
     -- burning wrecks light the street around them
     local sx, sy = P(s.cx, s.cy, 0)
@@ -174,10 +184,9 @@ end
 function S.drawEmissive(s, t)
   local sp = S.spriteFor(s)
   if not sp then return end
-  local x, y, k = spritePos(s, sp)
   local f = 0.85 + 0.15 * math.sin(t * 5.3 + s.seed) * math.sin(t * 2.1)
   lg.setColor(f, f * 0.95, f * 0.9, 0.9 * G.glowScale)
-  lg.draw(sp.glow, x, y, 0, k, k)
+  drawSprite(s, sp, sp.glow)
 end
 
 -- Menu card preview: the painting or the code-drawn stand-in, centred.
@@ -224,35 +233,85 @@ function S.drawFire(f, t)
   G.lightAt(sx, sy + 14, 230 * flick, { 1, 0.7, 0.4 }, 1.15, 160 * flick)
 end
 
+-- The specialization foundations, from the design bible. Each belongs to a
+-- group, whose members work there; the player builds them during the day
+-- (see Game:placeBuilding). Leadership has none and works at the HQ.
+local function foundation(group, name, sprite, desc, extra)
+  local d = { w = 3, h = 3, hp = 500, blocking = true, barZ = 2.4, group = group, name = name, sprite = sprite,
+    desc = desc, repairable = true }
+  for k, v in pairs(extra or {}) do d[k] = v end
+  return d
+end
+
 S.DEFS = {
   hq = { w = 4, h = 4, hp = 1500, blocking = true, barZ = 4.2 },
-  barracks = {
-    w = 3, h = 3, hp = 650, blocking = true, barZ = 2.6, name = "School Bus Barracks", sprite = "school_bus_barracks",
-    desc = "Combat drills here. A repurposed school bus for housing and training combat personnel.",
-  },
-  hydroponics = {
-    w = 3, h = 3, hp = 500, blocking = true, barZ = 2.2, name = "Hydroponic Container", sprite = "hydroponic_shipping_containers",
-    desc = "Agriculture works here too. Compact technical farming in shipping containers.",
-  },
-  lookout = {
-    w = 3, h = 3, hp = 500, blocking = true, barZ = 3.2, name = "Water Park Lifeguard Tower", sprite = "water_park_lifeguard_tower",
-    desc = "Scouting keeps watch here. An elevated station; scouts slide down to respond.",
-  },
-  salvage = {
-    w = 3, h = 3, hp = 550, blocking = true, barZ = 1.8, name = "Garbage Compactor Truck", sprite = "garbage_compactor_truck",
-    desc = "Scavenging sorts scrap here, and it slowly yields more.",
-  },
+
+  garden = foundation("Agriculture", "Salvage Garden", "salvage_garden",
+    "Agriculture farms here. Traditional low-tech crop growing.",
+    { w = 4, h = 4, hp = 1, blocking = false, flat = true, repairable = false }),
+  hydroponics = foundation("Agriculture", "Hydroponic Container", "hydroponic_shipping_containers",
+    "Agriculture farms here. Compact technical farming in shipping containers.", { barZ = 2.2 }),
+
+  barracks = foundation("Combat", "School Bus Barracks", "school_bus_barracks",
+    "Combat drills here. A repurposed school bus for housing and training combat personnel.", { hp = 650, barZ = 2.6 }),
+  armory = foundation("Combat", "Box Truck Armory", "box_truck_armory",
+    "Stores rifles and pistols and issues them to mobilizing groups; without it they collect gear at the HQ.",
+    { w = 4, h = 3, hp = 700 }),
+  trailer = foundation("Combat", "Trailer Blockade", "trailer_blockade",
+    "Combat drills here. Trailers welded into a fortified line that takes a beating.", { hp = 1000, barZ = 1.8 }),
+
+  workshop = foundation("Engineering", "Tow-Truck Workshop", "tow_truck_workshop",
+    "Engineering works here, patching walls and buildings for free.", { hp = 550, barZ = 2.2 }),
+  excavator = foundation("Engineering", "Excavator Graveyard", "excavator_graveyard",
+    "Engineering works here. Dead earthmovers fused into a construction complex."),
+  truckstop = foundation("Engineering", "Truck Stop", "truck_stop",
+    "Engineering works here. A roadside garage and fuelling area for utilities."),
+
+  lookout = foundation("Scouting", "Water Park Lifeguard Tower", "water_park_lifeguard_tower",
+    "Scouting keeps watch here. An elevated station; scouts slide down to respond.", { barZ = 3.2 }),
+  billboard = foundation("Scouting", "Billboard Observation Nest", "billboard_observation_nest",
+    "Scouting keeps watch here from a raised billboard.", { barZ = 3.4 }),
+  stormvan = foundation("Scouting", "Storm-Chaser Van", "storm_chaser_van",
+    "Scouting works here. A sensor van for watching the approaches.", { barZ = 1.8 }),
+
+  salvage = foundation("Scavenging", "Garbage Compactor Truck", "garbage_compactor_truck",
+    "Scavenging sorts scrap here, and it slowly yields more.", { hp = 550, barZ = 1.8 }),
+  carousel = foundation("Scavenging", "Airport Baggage Carousel", "airport_baggage_carousel",
+    "Scavenging sorts scrap here on a recovered luggage conveyor."),
+  lockers = foundation("Scavenging", "Storage Locker Labyrinth", "storage_lock_labyrinth",
+    "Scavenging sorts scrap here, cataloguing recovered goods."),
+
+  icecream = foundation("Medicine", "Ice Cream Truck Pharmacy", "ice_cream_truck_pharmacy",
+    "Medicine works here; the wounded heal faster.", { barZ = 2.0 }),
+  laundromat = foundation("Medicine", "Laundromat Sterilization Ward", "laundromat_sterilization_ward",
+    "Medicine works here. Washers, sinks and partitions for infection control; the wounded heal faster."),
+  bloodmobile = foundation("Medicine", "Bloodmobile Clinic", "bloodmobile_clinic",
+    "Medicine works here. A donation bus turned triage ward; the wounded heal faster.", { barZ = 2.0 }),
+
+  arcade = foundation("Research", "Derelict Arcade Lab", "derelict_arcade_lab",
+    "Research works here. Rewired cabinets and salvaged electronics; everyone learns faster.", { hp = 450 }),
+  aquarium = foundation("Research", "Aquarium Containment Lab", "aquarium_containment_lab",
+    "Research works here, studying the infected in old exhibit tanks; everyone learns faster."),
+  bowling = foundation("Research", "Bowling Alley Test Facility", "bowling_alley_test_facility",
+    "Research works here, testing weapons down the lanes; everyone learns faster."),
+
+  forge = foundation("Fabrication", "Pizza Parlor Forge", "pizza_parlor_forge",
+    "Fabrication works here, turning scrap into ammunition in the old pizza ovens.", { hp = 550, barZ = 2.2 }),
+  gunsmith = foundation("Fabrication", "Pawnshop Gunsmith", "pawnshop_gunsmith",
+    "Fabrication works here, turning scrap into ammunition at the reloading benches."),
+  cannery = foundation("Fabrication", "Soda Cannery Factory", "soda_cannery_factory",
+    "Fabrication works here, turning scrap into ammunition on the old canning line."),
+
+  vending = foundation("Logistics", "Vending Machine Supply Wall", "vending_machine_supply_wall",
+    "Logistics works here, rationing supplies so the settlement eats less."),
+  garage = foundation("Logistics", "Parking Garage Stockpile", "parking_garage_stockpile",
+    "Logistics works here, rationing supplies so the settlement eats less.", { barZ = 3.0 }),
+  vault = foundation("Logistics", "Drive-Thru Bank Vault", "drive_thru_bank_vault",
+    "Logistics works here, rationing supplies so the settlement eats less.", { hp = 800 }),
+
   -- a town building: size, sprite and solidity are set per instance
   town = { w = 2, h = 2, hp = 1, blocking = true },
   wreck = { w = 1, h = 1, hp = 1, blocking = true },
-  garden = {
-    w = 4, h = 4, hp = 1, blocking = false, flat = true, name = "Salvage Garden", sprite = "salvage_garden",
-    desc = "Agriculture works here. Traditional low-tech crop growing.",
-  },
-  armory = {
-    w = 4, h = 3, hp = 700, blocking = true, barZ = 2.4, name = "Box Truck Armory", sprite = "box_truck_armory",
-    desc = "Stores rifles and pistols and issues them to mobilizing groups. Combat drills in its yard.",
-  },
   fence = { w = 1, h = 1, hp = 220, blocking = true, barZ = 1.1, name = "Salvage Fence", desc = "Zombies must smash through." },
   gate = {
     w = 1, h = 1, hp = 320, blocking = true, gate = true, barZ = 1.3, name = "Gate",
@@ -262,16 +321,31 @@ S.DEFS = {
   crates = { w = 1, h = 1, hp = 120, blocking = true, barZ = 1.0, name = "Supply Crates", desc = "Salvaged stock." },
 }
 
+-- Which foundations each group can build, in the bible's order.
+S.FOUNDATIONS = {}
+for _, group in ipairs(D.GROUPS) do S.FOUNDATIONS[group] = {} end
+for _, kind in ipairs({ "garden", "hydroponics", "barracks", "armory", "trailer", "workshop", "excavator",
+                        "truckstop", "lookout", "billboard", "stormvan", "salvage", "carousel", "lockers",
+                        "icecream", "laundromat", "bloodmobile", "arcade", "aquarium", "bowling", "forge",
+                        "gunsmith", "cannery", "vending", "garage", "vault" }) do
+  local list = S.FOUNDATIONS[S.DEFS[kind].group]
+  list[#list + 1] = kind
+end
+S.BUILD_COST = 40 -- scrap
+
 function S.new(kind, x1, y1, opts)
   local def = S.DEFS[kind]
   local s = {
     kind = kind, def = def, x1 = x1, y1 = y1, w = def.w, h = def.h,
     hp = def.hp, maxhp = def.hp, blocking = def.blocking, gate = def.gate, flat = def.flat,
     name = def.name, desc = def.desc, seed = love.math.random(1, 9999),
+    group = def.group, repairable = def.repairable,
   }
   if opts then
     for k, v in pairs(opts) do s[k] = v end
   end
+  -- a flipped building is the painting mirrored, which turns its footprint
+  if s.flip then s.w, s.h = def.h, def.w end
   s.sprite = s.sprite or def.sprite or (kind == "hq" and s.hqId) or nil
   s.wx1, s.wy1 = x1 - 1, y1 - 1
   s.wx2, s.wy2 = s.wx1 + s.w, s.wy1 + s.h
