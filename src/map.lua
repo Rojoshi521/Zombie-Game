@@ -125,7 +125,7 @@ function Map:findPath(x, y, tx, ty)
     if not closed[cur] then
       closed[cur] = true
       expanded = expanded + 1
-      if expanded > 5000 then break end
+      if expanded > 25000 then break end
       local cx, cy = self:cellXY(cur)
       for _, d in ipairs(DIRS) do
         if self:canStep(cx, cy, d[1], d[2], blocked) then
@@ -160,9 +160,11 @@ end
 
 -- Cost for a zombie to move into a cell: free cells are cheap, structures
 -- cost more the sturdier they are, because they have to be smashed first.
+-- Solid town buildings can't be smashed at all (nil: impassable).
 function Map:enterCost(i, goal)
   local s = self.structAt[i]
   if not s or not s.blocking or s == goal then return 1 end
+  if s.solid then return nil end
   return 1 + s.hp / 15
 end
 
@@ -179,9 +181,9 @@ function Map:computeFlow(goal)
   local blocked = Map.blockedForZombie
   while not heap:empty() do
     local cur, d = heap:pop()
-    if d <= dist[cur] then
+    local cost = self:enterCost(cur, goal)
+    if cost and d <= dist[cur] then
       local cx, cy = self:cellXY(cur)
-      local cost = self:enterCost(cur, goal)
       for _, dd in ipairs(DIRS) do
         local nx, ny = cx + dd[1], cy + dd[2]
         if self:inBounds(nx, ny) then
@@ -189,8 +191,9 @@ function Map:computeFlow(goal)
           if dd[1] ~= 0 and dd[2] ~= 0 then
             ok = not blocked(self, cx + dd[1], cy) and not blocked(self, cx, cy + dd[2])
           end
-          if ok then
-            local ni = self:idx(nx, ny)
+          local ni = self:idx(nx, ny)
+          local ns = self.structAt[ni]
+          if ok and not (ns and ns.solid) then
             local nd = d + dd[3] * cost
             if not dist[ni] or nd < dist[ni] then
               dist[ni] = nd

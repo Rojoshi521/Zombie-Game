@@ -14,11 +14,19 @@ local P = Iso.toScreen
 local Game = {}
 Game.__index = Game
 
-local MAP_W, MAP_H = 48, 48
-local F_MIN, F_MAX = 14, 35 -- fence ring, in cells
-local FOOD_PER_SURVIVOR = 0.025 -- per second
+local Town = require("src.town")
+local Units = require("src.units")
+
+local MAP_W, MAP_H = 88, 88
+-- The settlement sits in the middle of the town. Layout coordinates below
+-- are written relative to the base and shifted by B.
+local B = 20
+local F_MIN, F_MAX = 14 + B, 35 + B -- fence ring, in cells
+local FOOD_PER_SURVIVOR = 0.018 -- per second
 local REBUILD_COST = 8
 local HP_PER_SCRAP = 25
+Game.F_MIN, Game.F_MAX, Game.B = F_MIN, F_MAX, B
+Game.MAP_W, Game.MAP_H = MAP_W, MAP_H
 
 function Game.new(hqDef)
   local g = setmetatable({}, Game)
@@ -29,14 +37,15 @@ function Game.new(hqDef)
   g.effects, g.decals, g.ruins = {}, {}, {}
   g.messages = {}
   g.selection = {}
-  g.res = { food = 35, ammo = 160, scrap = 40 }
+  g.sites = {}
+  g.res = { food = 40, ammo = 160, scrap = 40 }
   g.stock = { rifle = 4, pistol = 4 }
   g.time, g.speed, g.paused = 0, 1, false
   g.stats = { kills = 0, lost = 0 }
   g.foodRate = 0
   g.foodMult = hqDef.id == "farmhouse" and 1.3 or 1
-  g.healRate = hqDef.id == "hospital" and 3 or 1
-  g.bleedOut = hqDef.id == "hospital" and 50 or 25
+  g.healRate = 1
+  g.bleedOut = 25
   g.alertMult = hqDef.id == "watertower" and 2 or 1
   g.scrapMult = hqDef.id == "ferriswheel" and 1.5 or 1
   g.luck = hqDef.id == "casino" and 0.35 or 0
@@ -46,18 +55,29 @@ function Game.new(hqDef)
 
   g:buildSettlement()
   g.groups = {
-    Combat = { loadout = "rifle", mobilized = false, rallyX = 27.6, rallyY = 27.6 },
-    Agriculture = { loadout = "improvised", mobilized = false, rallyX = 20.6, rallyY = 22.0 },
+    Combat = { rallyX = B + 27.6, rallyY = B + 27.6 },
+    Scouting = { rallyX = B + 24.5, rallyY = B + 20.2 },
+    Scavenging = { rallyX = B + 21.0, rallyY = B + 31.0 },
+    Agriculture = { rallyX = B + 20.6, rallyY = B + 22.0 },
   }
-  for _ = 1, 4 do g:addSurvivor(Survivor.generate("Combat")) end
-  for _ = 1, 4 do g:addSurvivor(Survivor.generate("Agriculture")) end
+  for name, grp in pairs(g.groups) do
+    grp.loadout = D.GROUP_LOADOUT[name]
+    grp.mobilized = false
+  end
+  for _, c in ipairs({ { "Combat", 3 }, { "Scouting", 2 }, { "Scavenging", 2 }, { "Agriculture", 3 } }) do
+    for _ = 1, c[2] do g:addSurvivor(Survivor.generate(c[1])) end
+  end
 
   g.director = Director.new(g)
+  g:initFog()
+  Town.generate(g, MAP_W, MAP_H, { min = F_MIN - 3, max = F_MAX + 3, fmin = F_MIN, fmax = F_MAX })
   g.camera = Iso.newCamera(P(g.hq.cx + 1, g.hq.cy + 1))
   g:renderGround()
   g.map:computeFlow(g.hq)
-  g:message("Welcome to " .. hqDef.name .. ". The first wave comes in 75 seconds.")
-  g:message("Combat drills at the armory while Agriculture farms. Press F1 for controls.")
+  g:updateFog()
+  g:message("Welcome to " .. hqDef.name .. ". Night falls in 3 minutes: explore the town while it is light.")
+  g:message("The town outside is unexplored. Send scouts to look, and scavengers to search buildings.")
+  g:message("Press F1 for controls.")
   return g
 end
 
@@ -72,21 +92,27 @@ function Game:addStructure(kind, x1, y1, opts)
 end
 
 function Game:buildSettlement()
-  self.hq = self:addStructure("hq", 23, 23, { hqId = self.hqDef.id, name = self.hqDef.name,
+  self.hq = self:addStructure("hq", B + 23, B + 23, { hqId = self.hqDef.id, name = self.hqDef.name,
     desc = "Headquarters. " .. self.hqDef.text .. " If it falls, the settlement is lost." })
-  self.garden = self:addStructure("garden", 17, 26)
-  self.armory = self:addStructure("armory", 28, 18)
+  self.garden = self:addStructure("garden", B + 16, B + 26)
+  self.armory = self:addStructure("armory", B + 28, B + 17)
+  self.barracks = self:addStructure("barracks", B + 29, B + 29, { repairable = true })
+  self.hydroponics = self:addStructure("hydroponics", B + 17, B + 17, { repairable = true })
+  self.lookout = self:addStructure("lookout", B + 23, B + 16, { repairable = true })
+  self.salvageYard = self:addStructure("salvage", B + 16, B + 31, { repairable = true })
 
   local towers = {
     [F_MIN .. "," .. F_MIN] = true, [F_MAX .. "," .. F_MIN] = true,
     [F_MIN .. "," .. F_MAX] = true, [F_MAX .. "," .. F_MAX] = true,
-    ["23," .. F_MAX] = true, ["26," .. F_MAX] = true,
-    [F_MAX .. ",23"] = true, [F_MAX .. ",26"] = true,
+    [(B + 22) .. "," .. F_MAX] = true, [(B + 26) .. "," .. F_MAX] = true,
+    [F_MAX .. "," .. (B + 22)] = true, [F_MAX .. "," .. (B + 26)] = true,
   }
-  local gates = {
-    ["24," .. F_MAX] = true, ["25," .. F_MAX] = true,
-    [F_MAX .. ",24"] = true, [F_MAX .. ",25"] = true,
-  }
+  -- gates are three tiles wide; the value is the slice of the gate painting
+  local gates = {}
+  for k = 0, 2 do
+    gates[(B + 23 + k) .. "," .. F_MAX] = k
+    gates[F_MAX .. "," .. (B + 23 + k)] = k
+  end
   for cy = F_MIN, F_MAX do
     for cx = F_MIN, F_MAX do
       if cx == F_MIN or cx == F_MAX or cy == F_MIN or cy == F_MAX then
@@ -95,7 +121,7 @@ function Game:buildSettlement()
         if towers[key] then
           self:addStructure("tower", cx, cy, { repairable = true })
         elseif gates[key] then
-          self:addStructure("gate", cx, cy, { dir = dir, repairable = true })
+          self:addStructure("gate", cx, cy, { dir = dir, strip = gates[key], repairable = true })
         else
           self:addStructure("fence", cx, cy, { dir = dir, repairable = true })
         end
@@ -105,18 +131,22 @@ function Game:buildSettlement()
   self.hq.repairable = true
   self.armory.repairable = true
 
-  for _, c in ipairs({ { 20, 18 }, { 21, 18 }, { 31, 28 }, { 32, 29 }, { 17, 21 }, { 16, 31 } }) do
-    self:addStructure("crates", c[1], c[2], { repairable = false })
+  for _, c in ipairs({ { 21, 18 }, { 33, 26 }, { 33, 29 }, { 17, 21 }, { 20, 33 }, { 31, 16 } }) do
+    self:addStructure("crates", B + c[1], B + c[2], { repairable = false })
   end
 
   self.lamps = {
     { 23.3, 29.5, 2.2 }, { 26.7, 31.5, 2.2 }, { 29.5, 23.3, 2.2 }, { 31.5, 26.7, 2.2 },
-    { 18.0, 19.5, 2.0 }, { 32.5, 17.5, 2.0 }, { 17.0, 32.5, 2.0 },
+    { 18.0, 19.5, 2.0 }, { 32.5, 17.5, 2.0 }, { 20.5, 32.0, 2.0 },
   }
   self.fires = {
-    { 24.3, 30.6, isFire = true }, { 29.0, 25.6, isFire = true }, { 19.6, 21.3, isFire = true },
-    { 31.5, 20.5, isFire = true }, { 20.5, 29.5, isFire = true },
+    { 24.3, 30.6 }, { 29.0, 25.6 }, { 19.6, 21.3 }, { 31.5, 20.5 }, { 20.5, 29.5 },
   }
+  for _, l in ipairs(self.lamps) do l[1], l[2] = l[1] + B, l[2] + B end
+  for _, f in ipairs(self.fires) do
+    f[1], f[2] = f[1] + B, f[2] + B
+    f.isFire = true
+  end
 
   -- light sources that cast unit shadows
   self.shadowLights = {}
@@ -127,9 +157,11 @@ function Game:buildSettlement()
   end
 end
 
+-- Dirt tracks inside the walls (the town's streets are asphalt).
 local function isRoad(cx, cy)
-  if (cx == 24 or cx == 25) and cy >= 27 and cy <= MAP_H then return true end
-  if (cy == 24 or cy == 25) and cx >= 27 and cx <= MAP_W then return true end
+  cx, cy = cx - B, cy - B
+  if (cx == 24 or cx == 25) and cy >= 27 and cy <= 35 then return true end
+  if (cy == 24 or cy == 25) and cx >= 27 and cx <= 35 then return true end
   if cx >= 21 and cx <= 28 and cy >= 21 and cy <= 28 then
     return cx == 21 or cx == 28 or cy == 21 or cy == 28
   end
@@ -209,7 +241,17 @@ vec4 effect(vec4 color, Image tex, vec2 tc, vec2 sc) {
   vec3 roadCol = vec3(0.46, 0.36, 0.24) * (0.85 + 0.28 * n2);
   col = mix(col, roadCol, road * 0.85);
 
-  float weeds = smoothstep(0.6, 0.7, fbm(w * 0.45 + 20.0)) * (1.0 - inside * 0.8) * (1.0 - road);
+  // the town's asphalt streets: patched, cracked and dusted with dirt
+  float asphalt = smoothstep(0.4, 0.6, Texel(mask, w / mapSize).b);
+  vec3 asph = vec3(0.19, 0.185, 0.18) * (0.78 + 0.36 * n2);
+  asph *= 1.0 - 0.28 * smoothstep(0.6, 0.76, fbm(w * 0.9 + 13.0));
+  float acrack = 1.0 - smoothstep(0.0, 0.03, abs(fbm(w * 1.3 + 55.0) - 0.5));
+  asph *= 1.0 - acrack * 0.55;
+  asph = mix(asph, col, smoothstep(0.6, 0.85, fbm(w * 0.5 + 31.0)) * 0.6);
+  col = mix(col, asph, asphalt * 0.95);
+  road = max(road, asphalt);
+
+  float weeds = smoothstep(0.6, 0.7, fbm(w * 0.45 + 20.0)) * (1.0 - inside * 0.8) * (1.0 - road * 0.7);
   float blades = noise(w * vec2(18.0, 6.0));
   col = mix(col, vec3(0.25, 0.27, 0.12) * (0.6 + 0.7 * blades), weeds * 0.75);
 
@@ -231,41 +273,35 @@ vec4 effect(vec4 color, Image tex, vec2 tc, vec2 sc) {
 }
 ]]
 
-function Game:renderGround()
-  local w, h = (MAP_W + MAP_H) * Iso.HALF_W, (MAP_W + MAP_H) * Iso.HALF_H
-  self.groundOX, self.groundOY = -MAP_H * Iso.HALF_W, 0
-
-  local mask = love.image.newImageData(MAP_W, MAP_H)
-  for cy = 1, MAP_H do
-    for cx = 1, MAP_W do
-      local inside = cx >= F_MIN and cx <= F_MAX and cy >= F_MIN and cy <= F_MAX
-      mask:setPixel(cx - 1, cy - 1, isRoad(cx, cy) and 1 or 0, inside and 1 or 0, 0, 1)
+-- Lines, rocks and debris painted onto the ground once, on top of the shader.
+local function groundDetails(decor)
+  -- dashed centre lines down the town's streets
+  lg.setLineWidth(1.5)
+  lg.setColor(0.62, 0.56, 0.36, 0.5)
+  for _, s in ipairs(Town.STREETS) do
+    local t = 0.2
+    while t < MAP_W do
+      local crossing = false
+      for _, o in ipairs(Town.STREETS) do
+        if t + 0.5 > o - 1 and t < o + 1 then crossing = true end
+      end
+      local inside = t > F_MIN - 1 and t < F_MAX and s > F_MIN - 1 and s < F_MAX
+      if not crossing and not inside then
+        local ax, ay = P(t, s)
+        local bx, by = P(t + 0.5, s)
+        lg.line(ax, ay, bx, by)
+        ax, ay = P(s, t)
+        bx, by = P(s, t + 0.5)
+        lg.line(ax, ay, bx, by)
+      end
+      t = t + 1.25
     end
   end
-  local maskImg = lg.newImage(mask)
-  maskImg:setFilter("linear", "linear")
-  local shader = lg.newShader(GROUND_SHADER)
-  shader:send("canvasSize", { w, h })
-  shader:send("isoOffset", { self.groundOX, self.groundOY })
-  shader:send("mapSize", { MAP_W, MAP_H })
-  shader:send("mask", maskImg)
-  local white = lg.newImage(love.image.newImageData(1, 1, "rgba8", string.char(255, 255, 255, 255)))
 
-  local canvas = lg.newCanvas(w, h)
-  lg.setCanvas(canvas)
-  lg.clear(0, 0, 0, 0)
-  lg.push()
-  lg.origin()
-  lg.setShader(shader)
-  lg.setColor(1, 1, 1)
-  lg.draw(white, 0, 0, 0, w, h)
-  lg.setShader()
-  lg.translate(-self.groundOX, -self.groundOY)
-
-  -- wheel ruts along the roads
+  -- wheel ruts along the dirt tracks inside the walls
   lg.setLineWidth(3)
   for _, off in ipairs({ 0.6, 1.4 }) do
-    for _, seg in ipairs({ { 23 + off, 27, 23 + off, MAP_H }, { 27, 23 + off, MAP_W, 23 + off } }) do
+    for _, seg in ipairs({ { B + 23 + off, B + 27, B + 23 + off, F_MAX }, { B + 27, B + 23 + off, F_MAX, B + 23 + off } }) do
       local ax, ay = P(seg[1], seg[2])
       local bx, by = P(seg[3], seg[4])
       lg.setColor(0.12, 0.09, 0.06, 0.45)
@@ -274,25 +310,21 @@ function Game:renderGround()
   end
 
   -- loose rocks, planks and tyres, each with a little shadow
-  for _ = 1, 220 do
-    local x, y = 1 + love.math.random() * (MAP_W - 2), 1 + love.math.random() * (MAP_H - 2)
-    local sx, sy = P(x, y)
-    local r = love.math.random()
-    if r < 0.7 then
-      local s = 2 + love.math.random() * 4
+  for _, d in ipairs(decor) do
+    local sx, sy = P(d.x, d.y)
+    local s, g = d.s, d.g
+    if d.r < 0.7 then
       lg.setColor(0, 0, 0, 0.45)
       lg.ellipse("fill", sx + s * 0.6, sy + s * 0.25, s * 1.2, s * 0.5)
-      local g = 0.22 + love.math.random() * 0.1
       lg.setColor(g, g * 0.88, g * 0.76)
       lg.polygon("fill", sx - s, sy, sx - s * 0.4, sy - s * 0.7, sx + s * 0.6, sy - s * 0.6, sx + s, sy, sx, sy + s * 0.4)
       lg.setColor(g * 1.5, g * 1.35, g * 1.15)
       lg.polygon("fill", sx - s * 0.6, sy - s * 0.2, sx - s * 0.3, sy - s * 0.6, sx + s * 0.4, sy - s * 0.5, sx + s * 0.2, sy - s * 0.1)
-    elseif r < 0.88 then
-      local a = love.math.random() * math.pi
-      local len = 8 + love.math.random() * 10
+    elseif d.r < 0.88 then
+      local len = 8 + s * 2.5
       lg.push()
       lg.translate(sx, sy)
-      lg.rotate(a)
+      lg.rotate(d.a)
       lg.setColor(0, 0, 0, 0.4)
       lg.rectangle("fill", -len / 2 + 1, 0, len, 3)
       lg.setColor(0.30, 0.21, 0.13)
@@ -306,9 +338,74 @@ function Game:renderGround()
       lg.ellipse("line", sx, sy, 6, 3)
     end
   end
-  lg.pop()
-  lg.setCanvas()
-  self.groundCanvas = canvas
+end
+
+-- The ground never changes, so the shader paints it once into a grid of
+-- canvas chunks (one canvas would be too large for this map).
+local CHUNK_W, CHUNK_H = 2048, 1024
+
+function Game:renderGround()
+  local totalW, totalH = (MAP_W + MAP_H) * Iso.HALF_W, (MAP_W + MAP_H) * Iso.HALF_H
+  local originX = -MAP_H * Iso.HALF_W
+
+  local mask = love.image.newImageData(MAP_W, MAP_H)
+  local streets = self.townRoad or {}
+  for cy = 1, MAP_H do
+    for cx = 1, MAP_W do
+      local inside = cx >= F_MIN and cx <= F_MAX and cy >= F_MIN and cy <= F_MAX
+      local asphalt = streets[self.map:idx(cx, cy)] and 1 or 0
+      mask:setPixel(cx - 1, cy - 1, isRoad(cx, cy) and 1 or 0, inside and 1 or 0, asphalt, 1)
+    end
+  end
+  local maskImg = lg.newImage(mask)
+  maskImg:setFilter("linear", "linear")
+  local shader = lg.newShader(GROUND_SHADER)
+  shader:send("mapSize", { MAP_W, MAP_H })
+  shader:send("mask", maskImg)
+  local white = lg.newImage(love.image.newImageData(1, 1, "rgba8", string.char(255, 255, 255, 255)))
+
+  local decor = {}
+  for _ = 1, 700 do
+    decor[#decor + 1] = {
+      x = 1 + love.math.random() * (MAP_W - 2), y = 1 + love.math.random() * (MAP_H - 2),
+      r = love.math.random(), s = 2 + love.math.random() * 4, g = 0.22 + love.math.random() * 0.1,
+      a = love.math.random() * math.pi,
+    }
+  end
+
+  self.groundChunks = {}
+  for oy = 0, totalH - 1, CHUNK_H do
+    for ox = 0, totalW - 1, CHUNK_W do
+      local cw, ch = math.min(CHUNK_W, totalW - ox), math.min(CHUNK_H, totalH - oy)
+      local canvas = lg.newCanvas(cw, ch)
+      local isoX, isoY = originX + ox, oy
+      lg.setCanvas(canvas)
+      lg.clear(0, 0, 0, 0)
+      lg.push()
+      lg.origin()
+      shader:send("canvasSize", { cw, ch })
+      shader:send("isoOffset", { isoX, isoY })
+      lg.setShader(shader)
+      lg.setColor(1, 1, 1)
+      lg.draw(white, 0, 0, 0, cw, ch)
+      lg.setShader()
+      lg.translate(-isoX, -isoY)
+      groundDetails(decor)
+      lg.pop()
+      lg.setCanvas()
+      self.groundChunks[#self.groundChunks + 1] = { canvas = canvas, x = isoX, y = isoY, w = cw, h = ch }
+    end
+  end
+end
+
+-- Visible part of the world in iso pixels, for culling.
+function Game:viewRect(margin)
+  local cam = self.camera
+  local w, h = lg.getDimensions()
+  local x0, y0 = cam:screenToIso(0, 0)
+  local x1, y1 = cam:screenToIso(w, h)
+  margin = margin or 0
+  return x0 - margin, y0 - margin, x1 + margin, y1 + margin
 end
 
 ----------------------------------------------------------------------------
@@ -349,28 +446,50 @@ function Game:livingCount()
   return n
 end
 
+-- A spot along the front (south side) of a building, where its workers stand.
+local function frontOf(s)
+  return s.wx1 + 0.3 + love.math.random() * (s.w - 0.6), s.wy2 + 0.45 + love.math.random() * 0.7
+end
+
 function Game:workSpot(group)
-  if group == "Agriculture" and self.garden then
+  if group == "Agriculture" then
+    local hydro = self.hydroponics and not self.hydroponics.dead and self.hydroponics
+    if hydro and love.math.random() < 0.4 then return frontOf(hydro) end
     local g = self.garden
     return g.wx1 + 0.35 + love.math.random() * (g.w - 0.7), g.wy1 + 0.35 + love.math.random() * (g.h - 0.7)
   end
-  if group == "Combat" and not self.armory.dead then
-    local a = self.armory
-    return a.wx1 + 0.3 + love.math.random() * (a.w - 0.3), a.wy2 + 1.0 + love.math.random() * 1.2
+  if group == "Combat" then
+    if self.barracks and not self.barracks.dead then return frontOf(self.barracks) end
+    if not self.armory.dead then
+      local a = self.armory
+      return a.wx1 + 0.3 + love.math.random() * (a.w - 0.3), a.wy2 + 1.0 + love.math.random() * 1.2
+    end
   end
+  if group == "Scouting" and not self.lookout.dead then return frontOf(self.lookout) end
+  if group == "Scavenging" and not self.salvageYard.dead then return frontOf(self.salvageYard) end
   return self.hq.cx + (love.math.random() - 0.5) * 3, self.hq.wy2 + 1 + love.math.random()
 end
 
 function Game:doWork(s, dt)
   local hungry = self.res.food <= 0 and 0.5 or 1
   if s.group == "Agriculture" then
-    local rate = 0.07 * (0.6 + s.apt.Agriculture * 0.06 + s.prof.Agriculture * 0.05)
+    local rate = 0.085 * (0.6 + s.apt.Agriculture * 0.06 + s.prof.Agriculture * 0.05)
       * s:traitMul("work") * s:traitMul("farm") * self.foodMult * hungry
     self.res.food = self.res.food + rate * dt
     self.production = self.production + rate
     s:learn(self, "Agriculture", 0.004 * dt)
   elseif s.group == "Combat" then
     s:learn(self, "Combat", 0.012 * dt * (0.5 + s.apt.Combat * 0.08) * hungry)
+  elseif s.group == "Scouting" then
+    s:learn(self, "Scouting", 0.01 * dt * (0.5 + s.apt.Scouting * 0.08) * hungry)
+  elseif s.group == "Scavenging" then
+    -- picking through the scrap pile slowly turns up more
+    self.scrapAcc = (self.scrapAcc or 0) + 0.02 * (0.6 + s.apt.Scavenging * 0.06) * s:traitMul("work") * hungry * dt
+    if self.scrapAcc >= 1 then
+      self.res.scrap = self.res.scrap + 1
+      self.scrapAcc = self.scrapAcc - 1
+    end
+    s:learn(self, "Scavenging", 0.004 * dt)
   end
 end
 
@@ -442,11 +561,20 @@ function Game:killSurvivor(s)
   s.state = "dead"
   self.stats.lost = self.stats.lost + 1
   s.weapon = nil
+  s.carry = nil
   for i = #self.selection, 1, -1 do
     if self.selection[i] == s then table.remove(self.selection, i) end
   end
   self.decals[#self.decals + 1] = { kind = "body", x = s.x, y = s.y, t = 0, life = 9999, col = D.GROUP_COLORS[s.group] }
   self:message(s.name .. " (" .. s.background .. ") has died.", "bad")
+end
+
+function Game:rescue(s)
+  s.hp = s.maxhp * 0.25
+  s.state = "squad"
+  s.order, s.focus, s.path = nil, nil, nil
+  s.guardX, s.guardY = s.x, s.y
+  self:message(s.name .. " is back on their feet.", "good")
 end
 
 function Game:reviveDowned()
@@ -462,14 +590,21 @@ end
 ----------------------------------------------------------------------------
 -- Zombies and structures
 
+-- Wave packs come out of the town some way beyond the walls on their side.
+Game.WAVE_DISTANCE = 13
+
 function Game:spawnZombie(kind, edge)
   local x, y
   local r = U.clamp(edge.center + (love.math.random() - 0.5) * 9, 2, MAP_W - 2)
-  if edge.side == "x0" then x, y = 0.5, r
-  elseif edge.side == "x1" then x, y = MAP_W - 0.5, r
-  elseif edge.side == "y0" then x, y = r, 0.5
-  else x, y = r, MAP_H - 0.5 end
-  self.zombies[#self.zombies + 1] = Zombie.new(kind, x, y, self.director.wave)
+  local d = Game.WAVE_DISTANCE
+  if edge.side == "x0" then x, y = F_MIN - d, r
+  elseif edge.side == "x1" then x, y = F_MAX + d, r
+  elseif edge.side == "y0" then x, y = r, F_MIN - d
+  else x, y = r, F_MAX + d end
+  local cx, cy = Map.cellOf(x, y)
+  cx, cy = self.map:nearestOpen(cx, cy, Map.blockedForZombie)
+  if not cx then return end
+  self.zombies[#self.zombies + 1] = Zombie.new(kind, cx - 0.5, cy - 0.5, self.director.wave)
 end
 
 function Game:killZombie(z)
@@ -502,7 +637,7 @@ function Game:nearestSurvivor(x, y, r)
 end
 
 function Game:damageStructure(s, dmg, fx, fy)
-  if s.dead then return end
+  if s.dead or s.solid then return end
   s.hp = s.hp - dmg
   if (s == self.hq or s == self.armory) and self.time - (s.lastWarn or -99) > 12 then
     s.lastWarn = self.time
@@ -533,7 +668,7 @@ function Game:destroyStructure(s)
   end
   self.decals[#self.decals + 1] = { kind = "rubble", bits = bits, t = 0, life = 9999 }
   if s.repairable and s.kind ~= "hq" then
-    self.ruins[#self.ruins + 1] = { kind = s.kind, x1 = s.x1, y1 = s.y1, dir = s.dir, name = s.name }
+    self.ruins[#self.ruins + 1] = { kind = s.kind, x1 = s.x1, y1 = s.y1, dir = s.dir, strip = s.strip, name = s.name }
   end
   if s == self.hq then
     self:gameOver("The " .. self.hqDef.name .. " has fallen.")
@@ -579,8 +714,10 @@ function Game:repairWalls()
   for i = #self.ruins, 1, -1 do
     local r = self.ruins[i]
     if self.res.scrap >= REBUILD_COST and not cellOccupied(self, r.x1, r.y1) then
-      local s = self:addStructure(r.kind, r.x1, r.y1, { dir = r.dir, repairable = true })
+      local s = self:addStructure(r.kind, r.x1, r.y1, { dir = r.dir, strip = r.strip, repairable = true })
       if r.kind == "armory" then self.armory = s end
+      if r.kind == "barracks" then self.barracks = s end
+      if r.kind == "hydroponics" then self.hydroponics = s end
       self.res.scrap = self.res.scrap - REBUILD_COST
       spent = spent + REBUILD_COST
       table.remove(self.ruins, i)
@@ -588,6 +725,212 @@ function Game:repairWalls()
   end
   self.map:computeFlow(self.hq)
   if spent > 0 then self:message("Spent " .. spent .. " scrap on repairs.", "good") end
+end
+
+----------------------------------------------------------------------------
+-- Exploration: fog of war, the town's infected, searching and loot
+
+-- Fog per cell: 0 unexplored, 1 explored but out of sight, 2 in sight.
+function Game:initFog()
+  self.fog = {}
+  for i = 1, MAP_W * MAP_H do self.fog[i] = 0 end
+  self.fogData = love.image.newImageData(MAP_W, MAP_H)
+  self.fogImg = lg.newImage(self.fogData)
+  self.fogImg:setFilter("linear", "linear")
+  self.fogT = 0
+  self.fogShader = lg.newShader([[
+    extern Image fog;
+    extern vec2 camPos;
+    extern float zoom;
+    extern vec2 screenCenter;
+    extern vec2 mapSize;
+    extern vec3 tint;
+    extern float mode;
+    extern float memory;
+    vec4 effect(vec4 color, Image tex, vec2 tc, vec2 sc) {
+      vec2 iso = (sc - screenCenter) / zoom + camPos;
+      vec2 w = vec2((iso.x / 32.0 + iso.y / 16.0) * 0.5, (iso.y / 16.0 - iso.x / 32.0) * 0.5);
+      float f = Texel(fog, w / mapSize).r;
+      if (w.x < 0.0 || w.y < 0.0 || w.x > mapSize.x || w.y > mapSize.y) f = 0.0;
+      float seen = smoothstep(0.05, 0.4, f);
+      float sight = smoothstep(0.45, 0.95, f);
+      if (mode < 0.5) {
+        // sky light where someone can see, a trace of it where they've been
+        return vec4(tint * (sight + seen * memory), 1.0);
+      }
+      float m = mix(seen * (0.35 + memory * 0.5), 1.0, sight);
+      return vec4(m, m, m, 1.0);
+    }
+  ]])
+end
+
+function Game:fogAt(x, y)
+  local cx, cy = Map.cellOf(x, y)
+  if cx < 1 or cy < 1 or cx > MAP_W or cy > MAP_H then return 0 end
+  return self.fog[(cy - 1) * MAP_W + cx]
+end
+
+local function reveal(fog, x, y, r)
+  local r2 = r * r
+  for cy = math.max(1, math.floor(y - r) + 1), math.min(MAP_H, math.floor(y + r) + 1) do
+    for cx = math.max(1, math.floor(x - r) + 1), math.min(MAP_W, math.floor(x + r) + 1) do
+      local dx, dy = cx - 0.5 - x, cy - 0.5 - y
+      if dx * dx + dy * dy <= r2 then fog[(cy - 1) * MAP_W + cx] = 2 end
+    end
+  end
+end
+
+function Game:updateFog()
+  local fog = self.fog
+  for i = 1, #fog do
+    if fog[i] == 2 then fog[i] = 1 end
+  end
+  -- the walls and the cleared ground around them are always in sight
+  for cy = F_MIN - 3, F_MAX + 3 do
+    for cx = F_MIN - 3, F_MAX + 3 do fog[(cy - 1) * MAP_W + cx] = 2 end
+  end
+  for _, s in ipairs(self.survivors) do
+    if s:isActive() then reveal(fog, s.x, s.y, s:vision() * (0.8 + 0.35 * self.director:daylight())) end
+  end
+  for _, s in ipairs(self.structures) do
+    if s.kind == "tower" then reveal(fog, s.cx, s.cy, 7) end
+  end
+  for i, s in ipairs(self.sites) do
+    if not s.site.known and fog[(s.y1 - 1) * MAP_W + s.x1] == 2 then s.site.known = true end
+  end
+  local data = self.fogData
+  for cy = 1, MAP_H do
+    for cx = 1, MAP_W do
+      local v = fog[(cy - 1) * MAP_W + cx]
+      local f = v == 2 and 1 or (v == 1 and 0.4 or 0)
+      data:setPixel(cx - 1, cy - 1, f, f, f, 1)
+    end
+  end
+  self.fogImg:replacePixels(data)
+  self.minimapDirty = true
+end
+
+function Game:spawnRoamer(x, y)
+  local cx, cy = Map.cellOf(x, y)
+  cx, cy = self.map:nearestOpen(cx, cy, Map.blockedForZombie)
+  if not cx then return end
+  local z = Zombie.new(love.math.random() < 0.15 and "runner" or "walker", cx - 0.5, cy - 0.5, 1)
+  z.home = { z.x, z.y }
+  self.zombies[#self.zombies + 1] = z
+end
+
+function Game:waveZombieCount()
+  local n = 0
+  for _, z in ipairs(self.zombies) do
+    if not z.home and not z.dead then n = n + 1 end
+  end
+  return n
+end
+
+-- Gunfire draws in idle infected from around the town.
+function Game:noise(x, y, r, source)
+  local r2 = r * r
+  for _, z in ipairs(self.zombies) do
+    if z.home and not z.target and not z.dead then
+      local dx, dy = z.x - x, z.y - y
+      if dx * dx + dy * dy < r2 then z.target = source end
+    end
+  end
+end
+
+function Game:inWalls(x, y)
+  local cx, cy = Map.cellOf(x, y)
+  return cx > F_MIN and cx < F_MAX and cy > F_MIN and cy < F_MAX
+end
+
+-- Searching a building: everyone standing at its door adds progress; when it
+-- is done the loot is split between them to carry home.
+function Game:searchTick(s, site, dt)
+  local rate = (0.5 + s.apt.Scavenging * 0.06 + s.prof.Scavenging * 0.08) * (s.group == "Scavenging" and 1.5 or 1)
+  site.site.progress = site.site.progress + rate * dt
+  s:learn(self, "Scavenging", 0.01 * dt)
+  if site.site.progress >= site.site.work then self:completeSearch(site) end
+end
+
+function Game:completeSearch(site)
+  local info = site.site
+  if info.searched then return end
+  info.searched = true
+  local crew = {}
+  for _, s in ipairs(self.survivors) do
+    if s:isActive() and s.order and s.order.kind == "search" and s.order.site == site then crew[#crew + 1] = s end
+  end
+  if #crew == 0 then return end
+  local parts = {}
+  for k, n in pairs(info.loot) do
+    parts[#parts + 1] = n .. " " .. (k == "rifle" and "rifle" or k == "pistol" and "pistol" or k)
+    for i, s in ipairs(crew) do
+      local share = math.floor(n / #crew) + ((i <= n % #crew) and 1 or 0)
+      if share > 0 then
+        s.carry = s.carry or {}
+        s.carry[k] = (s.carry[k] or 0) + share
+      end
+    end
+  end
+  for _, s in ipairs(crew) do
+    s.order = nil
+    s.guardX, s.guardY = s.x, s.y
+  end
+  if #parts == 0 then
+    self:message(site.name .. " searched: nothing useful left.")
+  else
+    self:message(site.name .. " searched: found " .. table.concat(parts, ", ") .. ". Bring it home to use it.", "good")
+  end
+end
+
+function Game:deliver(s)
+  local parts = {}
+  for k, n in pairs(s.carry) do
+    if k == "rifle" or k == "pistol" then
+      self.stock[k] = self.stock[k] + n
+    else
+      self.res[k] = self.res[k] + n
+    end
+    parts[#parts + 1] = n .. " " .. k
+  end
+  s.carry = nil
+  if #parts > 0 then self:message(s.name .. " brought home " .. table.concat(parts, ", ") .. ".", "good") end
+end
+
+function Game:orderSearch(site)
+  local list = self:selectedActive()
+  local ex, ey = Town.entrance(site)
+  for i, s in ipairs(list) do
+    local ox, oy = ringOffset(i)
+    s.state = "squad"
+    s.focus = nil
+    s.order = { kind = "search", site = site }
+    if not s:walkTo(self, ex + ox * 0.6, ey + oy * 0.6) then s.order = nil end
+    s.guardX, s.guardY = ex + ox * 0.6, ey + oy * 0.6
+  end
+  if #list > 0 then
+    self:message("Sending " .. #list .. " to search the " .. site.name .. ".")
+  end
+end
+
+-- The town building whose painting is under the mouse, front-most first.
+function Game:siteAt(mx, my)
+  local ix, iy = self.camera:screenToIso(mx, my)
+  local best
+  for _, s in ipairs(self.structures) do
+    if s.town and self:fogAt(s.cx, s.cy) > 0 then
+      local sp = S.spriteFor(s)
+      if sp then
+        local sx, sy = P(s.cx, s.cy, 0)
+        local k = sp.def.scale
+        local x0, y0 = sx - sp.def.ax * k, sy - sp.def.ay * k
+        if ix >= x0 and ix <= x0 + sp.img:getWidth() * k and iy >= y0 and iy <= sy + s.w * 8 then
+          if not best or s.depth > best.depth then best = s end
+        end
+      end
+    end
+  end
+  return best
 end
 
 ----------------------------------------------------------------------------
@@ -680,7 +1023,7 @@ function Game:zombieAt(mx, my)
   local cam = self.camera
   local best, bd
   for _, z in ipairs(self.zombies) do
-    if not z.dead then
+    if not z.dead and self:fogAt(z.x, z.y) == 2 then
       local sz = z.kind == "brute" and 1.5 or 1
       local sx, sy = cam:worldToScreen(z.x, z.y, 0)
       local dx, dy = mx - sx, my - (sy - 9 * cam.zoom * sz)
@@ -732,7 +1075,9 @@ end
 
 function Game:gameOver(reason)
   if self.over then return end
-  self.over = { reason = reason, wave = self.director.wave }
+  local d = self.director
+  local survived = (d.phase == "dusk" or d.phase == "night") and d.wave - 1 or d.wave
+  self.over = { reason = reason, wave = survived }
 end
 
 ----------------------------------------------------------------------------
@@ -794,6 +1139,11 @@ function Game:update(dt)
 
   self.time = self.time + dt
   self.production = 0
+  self.fogT = self.fogT - dt
+  if self.fogT <= 0 then
+    self.fogT = 0.25
+    self:updateFog()
+  end
   self.director:update(dt)
   for _, s in ipairs(self.survivors) do s:update(self, dt) end
   for _, z in ipairs(self.zombies) do
@@ -854,7 +1204,7 @@ end
 
 function Game:drawAlertMarkers()
   local phase = self.director.phase
-  if phase ~= "alert" and not (phase == "wave" and #self.director.queue > 0) then return end
+  if phase ~= "dusk" and not (phase == "night" and #self.director.queue > 0) then return end
   local pulse = 0.5 + 0.5 * math.sin(self.time * 6)
   for _, e in ipairs(self.director.edges) do
     local mx, my, dx, dy
@@ -892,8 +1242,21 @@ function Game:drawRally(name)
   lg.polygon("fill", tx, ty, tx + 14, ty + 3 + wave, tx, ty + 8)
 end
 
--- A long shadow thrown away from the nearest lamp or fire.
+-- A long shadow thrown away from the nearest lamp or fire, or by day from the
+-- low sun in the south-west.
 function Game:drawCastShadow(x, y, size)
+  local day = self.director:daylight()
+  if day > 0.02 then
+    local sx, sy = P(x, y, 0)
+    local len = 15 * size
+    lg.push()
+    lg.translate(sx, sy)
+    lg.rotate(-0.42)
+    lg.setColor(0, 0, 0, 0.42 * day)
+    lg.ellipse("fill", len * 0.45, 0, len * 0.55, 2.6 * size)
+    lg.pop()
+    if day > 0.6 then return end
+  end
   local best, bd
   for _, l in ipairs(self.shadowLights) do
     local dx, dy = x - l[1], y - l[2]
@@ -913,7 +1276,20 @@ function Game:drawCastShadow(x, y, size)
   lg.pop()
 end
 
-local AMBIENT = { 0.045, 0.045, 0.065 }
+-- Sky light wherever a survivor can see; the light map is black elsewhere.
+-- Moonlight at night, a hazy overcast sun by day, embers in between.
+local MOONLIGHT = { 0.075, 0.08, 0.115 }
+local DUSKLIGHT = { 0.50, 0.30, 0.20 }
+local SUNLIGHT = { 0.88, 0.85, 0.78 }
+
+local function mix3(a, b, t)
+  return { a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t, a[3] + (b[3] - a[3]) * t }
+end
+
+local function skyLight(day)
+  if day < 0.5 then return mix3(MOONLIGHT, DUSKLIGHT, day * 2) end
+  return mix3(DUSKLIGHT, SUNLIGHT, (day - 0.5) * 2)
+end
 
 function Game:ensureCanvases()
   local w, h = lg.getDimensions()
@@ -926,28 +1302,47 @@ end
 function Game:draw(ui)
   local cam = self.camera
   self:ensureCanvases()
-  G.lights, G.glows = {}, {}
+  G.lights, G.glows, G.emissives = {}, {}, {}
+
+  -- what's on screen (iso pixels, generous for tall paintings)
+  local vx0, vy0, vx1, vy1 = self:viewRect(64)
+  local function onScreen(x, y, up)
+    local sx, sy = P(x, y, 0)
+    return sx >= vx0 - 200 and sx <= vx1 + 200 and sy >= vy0 and sy <= vy1 + (up or 320)
+  end
+  local function shown(s)
+    if s.town and self:fogAt(s.cx, s.cy) == 0 then return false end
+    return onScreen(s.cx, s.cy, 420)
+  end
 
   -- 1. the scene, as if fully lit
   lg.setCanvas({ self.sceneCanvas, stencil = true })
   lg.clear(0.03, 0.025, 0.02, 1)
   cam:apply()
   lg.setColor(1, 1, 1)
-  lg.draw(self.groundCanvas, self.groundOX, self.groundOY)
+  for _, c in ipairs(self.groundChunks) do
+    if c.x < vx1 and c.x + c.w > vx0 and c.y < vy1 and c.y + c.h > vy0 then
+      lg.draw(c.canvas, c.x, c.y)
+    end
+  end
   for _, d in ipairs(self.decals) do drawDecal(d) end
+  local drawn = {}
   for _, s in ipairs(self.structures) do
-    if s.flat then
-      S.draw(s, self.time)
-    elseif S.spriteFor(s) then
-      S.drawSpriteGround(s)
-    else
-      G.contactShadow(s.cx, s.cy, (s.w + s.h) * 22, s.kind == "fence" and 0.4 or 0.6)
+    if shown(s) then
+      drawn[#drawn + 1] = s
+      if s.flat then
+        S.draw(s, self.time)
+      elseif S.spriteFor(s) then
+        S.drawSpriteGround(s)
+      else
+        G.contactShadow(s.cx, s.cy, (s.w + s.h) * 22, s.kind == "fence" and 0.4 or 0.6)
+      end
     end
   end
 
   local list = self.drawList
   local n = 0
-  for _, s in ipairs(self.structures) do
+  for _, s in ipairs(drawn) do
     if not s.flat then
       n = n + 1
       list[n] = s
@@ -959,16 +1354,20 @@ function Game:draw(ui)
     list[n] = l
   end
   for _, s in ipairs(self.survivors) do
-    if s.state ~= "dead" then
+    if s.state ~= "dead" and onScreen(s.x, s.y) then
       s.depth = s.x + s.y
       n = n + 1
       list[n] = s
     end
   end
+  local seenZombies = {}
   for _, z in ipairs(self.zombies) do
-    z.depth = z.x + z.y
-    n = n + 1
-    list[n] = z
+    if self:fogAt(z.x, z.y) == 2 and onScreen(z.x, z.y) then
+      z.depth = z.x + z.y
+      n = n + 1
+      list[n] = z
+      seenZombies[#seenZombies + 1] = z
+    end
   end
   for _, f in ipairs(self.fires) do
     f.depth = f[1] + f[2]
@@ -986,9 +1385,11 @@ function Game:draw(ui)
     elseif o.kind then
       S.draw(o, self.time)
     elseif o.isFire then
-      S.drawFire(o, self.time)
+      local t = self.time
+      local flicker = 0.85 + 0.15 * math.sin(t * 13 + o[1] * 3) * math.sin(t * 7.7 + o[2])
+      if not S.drawPoint("firebarrel", o[1], o[2], 1, flicker) then S.drawFire(o, t) end
     else
-      G.lampPost(o[1], o[2], o[3])
+      if not S.drawPoint("lamp", o[1], o[2]) then G.lampPost(o[1], o[2], o[3]) end
     end
   end
   for _, e in ipairs(self.effects) do
@@ -1000,14 +1401,15 @@ function Game:draw(ui)
   end
   cam:release()
 
-  -- 2. the light map: near-black ambient plus every light queued above
+  -- 2. the light map: every light queued above, plus moonlight in sight,
+  -- then cut to black wherever nobody has explored
   lg.setCanvas(self.lightCanvas)
-  lg.clear(AMBIENT[1], AMBIENT[2], AMBIENT[3], 1)
+  lg.clear(0, 0, 0, 1)
   cam:apply()
   for _, s in ipairs(self.survivors) do
     if s.state ~= "dead" then
       local sx, sy = P(s.x, s.y, 0)
-      G.lightAt(sx, sy - 6, 58, { 1, 0.9, 0.75 }, 0.55, 40)
+      G.lightAt(sx, sy - 16, 70, { 1, 0.9, 0.75 }, 0.7, 56)
     end
   end
   for _, e in ipairs(self.effects) do
@@ -1017,6 +1419,25 @@ function Game:draw(ui)
   end
   G.flushLights()
   cam:release()
+  local sw, sh = lg.getDimensions()
+  local fs = self.fogShader
+  fs:send("fog", self.fogImg)
+  fs:send("camPos", { cam.x, cam.y })
+  fs:send("zoom", cam.zoom)
+  fs:send("screenCenter", { math.floor(sw / 2), math.floor(sh / 2) })
+  fs:send("mapSize", { MAP_W, MAP_H })
+  local day = self.director:daylight()
+  fs:send("tint", skyLight(day))
+  fs:send("memory", 0.2 + 0.35 * day)
+  lg.setShader(fs)
+  fs:send("mode", 0)
+  lg.setBlendMode("add")
+  lg.rectangle("fill", 0, 0, sw, sh)
+  fs:send("mode", 1)
+  lg.setBlendMode("multiply", "premultiplied")
+  lg.rectangle("fill", 0, 0, sw, sh)
+  lg.setBlendMode("alpha")
+  lg.setShader()
   lg.setCanvas()
 
   -- 3. compose: scene x light
@@ -1025,12 +1446,39 @@ function Game:draw(ui)
   lg.setBlendMode("multiply", "premultiplied")
   lg.draw(self.lightCanvas)
   lg.setBlendMode("alpha")
+  -- by day the light map tops out at 1, which still leaves the dark paintings
+  -- looking like evening; add the lit scene once more, a little cooler
+  if day > 0.01 then
+    self.dayShader = self.dayShader or lg.newShader([[
+      extern Image light;
+      extern vec2 size;
+      vec4 effect(vec4 color, Image tex, vec2 tc, vec2 sc) {
+        vec3 l = Texel(light, sc / size).rgb;
+        return vec4(Texel(tex, tc).rgb * l * color.rgb, 1.0);
+      }
+    ]])
+    self.dayShader:send("light", self.lightCanvas)
+    self.dayShader:send("size", { sw, sh })
+    lg.setShader(self.dayShader)
+    lg.setBlendMode("add")
+    lg.setColor(0.42 * day, 0.48 * day, 0.56 * day)
+    lg.draw(self.sceneCanvas)
+    lg.setBlendMode("alpha")
+    lg.setShader()
+    lg.setColor(1, 1, 1)
+  end
 
-  -- 4. things that give off light, added on top
+  -- 4. things that give off light, added on top; painted lamps and windows
+  -- fade into the daylight
   cam:apply()
+  G.glowScale = 1 - 0.8 * day
+  G.flushEmissives()
   lg.setBlendMode("add")
-  for _, s in ipairs(self.structures) do S.drawEmissive(s, self.time) end
-  for _, z in ipairs(self.zombies) do z:drawEyes() end
+  for _, s in ipairs(drawn) do S.drawEmissive(s, self.time) end
+  for _, z in ipairs(seenZombies) do z:drawEyes() end
+  lg.setBlendMode("alpha")
+  Units.flushGlow(1 - day)
+  lg.setBlendMode("add")
   lg.setBlendMode("alpha")
   for _, e in ipairs(self.effects) do
     local f = e.t / e.life
@@ -1056,6 +1504,7 @@ function Game:draw(ui)
   end
 
   G.flushGlows()
+  G.glowScale = 1
 
   -- 5. readable overlays, never darkened
   self:drawAlertMarkers()
@@ -1065,6 +1514,21 @@ function Game:draw(ui)
   end
   for _, s in ipairs(self.survivors) do
     if s.state ~= "dead" then s:drawOverlay(self:isSelected(s)) end
+  end
+  -- buildings the scouts have seen that still hold something
+  local pulse = 0.75 + 0.25 * math.sin(self.time * 3)
+  for _, s in ipairs(drawn) do
+    local info = s.site
+    if info and info.known and not info.searched and next(info.loot) then
+      local sx, sy = P(s.cx, s.cy, s.kind == "wreck" and 1.6 or 3.2)
+      lg.setColor(0, 0, 0, 0.6)
+      lg.circle("fill", sx, sy, 7)
+      lg.setColor(1, 0.72, 0.3, pulse)
+      lg.polygon("fill", sx, sy - 5, sx + 4.5, sy, sx, sy + 5, sx - 4.5, sy)
+      if info.progress > 0 then
+        G.bar(sx - 12, sy + 9, 24, 3, info.progress / info.work, { 1, 0.72, 0.3 })
+      end
+    end
   end
   G.flushGlows()
 
@@ -1082,7 +1546,7 @@ function Game:draw(ui)
       G.bar(sx - 8, sy - 25, 16, 2, s.hp / s.maxhp, G.hpColor(s.hp / s.maxhp))
     end
   end
-  for _, z in ipairs(self.zombies) do
+  for _, z in ipairs(seenZombies) do
     if z.hp < z.maxhp then
       local sx, sy = P(z.x, z.y, 0)
       local h = z.kind == "brute" and 34 or 24

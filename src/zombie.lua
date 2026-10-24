@@ -2,6 +2,7 @@ local U = require("src.util")
 local D = require("src.data")
 local Iso = require("src.iso")
 local Map = require("src.map")
+local Units = require("src.units")
 
 local P = Iso.toScreen
 local lg = love.graphics
@@ -26,12 +27,19 @@ function Zombie.new(kind, x, y, wave)
   z.anim = love.math.random() * 10
   z.face = 1
   z.shirt = U.choice(SHIRTS)
+  z.look = love.math.random(1, 10)
   return z
 end
 
 function Zombie:faceDir(dx, dy)
   local sdx = dx - dy
   if sdx > 0.05 then self.face = 1 elseif sdx < -0.05 then self.face = -1 end
+end
+
+-- The town's infected are sluggish and short-sighted by day and restless at night.
+function Zombie:aggro(game)
+  if not self.home then return self.def.aggro end
+  return self.def.aggro * (1.4 - 0.6 * game.director:daylight())
 end
 
 function Zombie:update(game, dt)
@@ -50,7 +58,7 @@ function Zombie:update(game, dt)
   self.retarget = self.retarget - dt
   if self.retarget <= 0 then
     self.retarget = 0.4 + love.math.random() * 0.3
-    local near = game:nearestSurvivor(self.x, self.y, self.def.aggro)
+    local near = game:nearestSurvivor(self.x, self.y, self:aggro(game))
     if near then self.target = near end
   end
 
@@ -58,7 +66,7 @@ function Zombie:update(game, dt)
   if t and not t:isActive() then
     self.target, t = nil, nil
   end
-  if t and U.dist(self.x, self.y, t.x, t.y) > self.def.aggro * 2 then
+  if t and U.dist(self.x, self.y, t.x, t.y) > self:aggro(game) * 2 then
     self.target, t = nil, nil
   end
 
@@ -75,6 +83,17 @@ function Zombie:update(game, dt)
       return
     end
     tx, ty = t.x, t.y
+  elseif self.home then
+    -- the town's infected shuffle around where they were found
+    self.wanderT = (self.wanderT or 0) - dt
+    if self.wanderT <= 0 or not self.wx then
+      self.wanderT = 3 + love.math.random() * 5
+      self.wx = self.home[1] + (love.math.random() - 0.5) * 4
+      self.wy = self.home[2] + (love.math.random() - 0.5) * 4
+    end
+    if U.dist(self.x, self.y, self.wx, self.wy) < 0.3 then return end
+    self:moveToward(game, self.wx, self.wy, dt * (0.7 - 0.3 * game.director:daylight()))
+    return
   else
     local nx, ny = game.map:flowNext(Map.cellOf(self.x, self.y))
     if nx then
@@ -114,6 +133,15 @@ function Zombie:moveToward(game, tx, ty, dt)
     return
   end
   local s = map:structure(cx, cy)
+  if s and s.solid then
+    -- can't smash a whole building: shuffle round it instead
+    if not map:blockedForZombie(Map.cellOf(nx, self.y)) then
+      self.x = nx
+    elseif not map:blockedForZombie(Map.cellOf(self.x, ny)) then
+      self.y = ny
+    end
+    return
+  end
   if s and self.cd <= 0 then
     self.cd = self.def.cd
     self.attackAnim = 0.25
@@ -142,8 +170,35 @@ function Zombie:headPos()
   return sx + lean * 1.35, sy - 14 * s - bob - 2.6 * s, s
 end
 
+-- The painted figure's pose this frame: lurching bob and lean.
+function Zombie:pose()
+  local fast = self.kind == "runner"
+  local step = math.sin(self.anim * (fast and 12 or 5))
+  local lift = self.moving and math.abs(step) * (fast and 1.8 or 1.1) or 0
+  local lean = (self.moving and step * (fast and 0.05 or 0.08) or math.sin(self.anim * 1.3) * 0.03)
+    + (fast and 0.12 or 0.05)
+  if self.attackAnim then lean = lean + 0.18 end
+  return lean, lift, Units.ZOMBIE_H[self.kind] or Units.ZOMBIE_H.walker
+end
+
 -- Eyes glow in the dark, so the horde is visible before the lamps reach it.
 function Zombie:drawEyes()
+  local id = Units.zombieId(self)
+  if id then
+    local sx, sy = P(self.x, self.y, 0)
+    local lean, lift, h = self:pose()
+    local hx, hy = Units.headAt(id, sx, sy, self.face, h, lift)
+    -- the figure leans about its feet, so the head swings forward with it
+    local up = sy - hy
+    hx, hy = hx + self.face * up * math.sin(lean), sy - up * math.cos(lean) + h * 0.045
+    local ex = hx + self.face * h * 0.03
+    lg.setColor(1, 0.18, 0.1, 0.95)
+    lg.circle("fill", ex, hy, 0.75)
+    lg.circle("fill", ex - self.face * 1.5, hy, 0.6)
+    lg.setColor(1, 0.1, 0.05, 0.22)
+    lg.circle("fill", ex, hy, 3.2)
+    return
+  end
   local hx, hy, s = self:headPos()
   local ex = hx + self.face * 1.3 * s
   lg.setColor(1, 0.18, 0.1, 0.95)
@@ -160,6 +215,14 @@ function Zombie:draw(game)
   game:drawCastShadow(self.x, self.y, s)
   lg.setColor(0, 0, 0, 0.5)
   lg.ellipse("fill", sx, sy, 7 * s, 3.5 * s)
+
+  local id = Units.zombieId(self)
+  if id then
+    local lean, lift, h = self:pose()
+    Units.draw(id, sx, sy, self.face, h, lean, lift, 0, { 0.92, 0.95, 0.9 }, 0.16)
+    if self.hurtFlash then Units.flash(id, sx, sy, self.face, h, lean, lift, self.hurtFlash * 5) end
+    return
+  end
 
   local speed = self.kind == "runner" and 13 or 6
   local bob = self.moving and math.abs(math.sin(self.anim * speed)) * 1.2 or 0

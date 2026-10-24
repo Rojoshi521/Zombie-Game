@@ -1,5 +1,6 @@
 local D = require("src.data")
 local G = require("src.gfx")
+local Iso = require("src.iso")
 local S = require("src.structures")
 local UI = require("src.ui")
 local Game = require("src.game")
@@ -50,7 +51,10 @@ local function drawMenu()
   local mx, my = love.mouse.getPosition()
   for i, hq in ipairs(D.HQS) do
     local col, row = (i - 1) % cols, math.floor((i - 1) / cols)
-    local x, y = x0 + col * (cw + gap), y0 + row * (ch + gap)
+    -- centre a short last row
+    local inRow = math.min(cols, #D.HQS - row * cols)
+    local rowX = x0 + (cols - inRow) * (cw + gap) / 2
+    local x, y = rowX + col * (cw + gap), y0 + row * (ch + gap)
     local hover = mx >= x and mx <= x + cw and my >= y and my <= y + ch
     lg.setColor(hover and { 0.12, 0.10, 0.085, 0.97 } or { 0.07, 0.062, 0.055, 0.95 })
     lg.rectangle("fill", x, y, cw, ch, 4)
@@ -79,9 +83,10 @@ end
 
 -- In autotest runs, print crashes to the console and quit instead of
 -- waiting on the error screen.
+local toolRun = false
 local defaultErrorHandler = love.errorhandler
 function love.errorhandler(msg)
-  if autotest then
+  if autotest or toolRun then
     print(debug.traceback("Error: " .. tostring(msg), 3))
     return function() return 1 end
   end
@@ -92,20 +97,22 @@ end
 local calibrate = false
 
 local function drawCalibration()
-  local Iso = require("src.iso")
   lg.clear(0.12, 0.12, 0.14)
   local ids = {}
   for id in pairs(D.SPRITES) do ids[#ids + 1] = id end
   table.sort(ids)
   for i, id in ipairs(ids) do
     local sp = S.sprites[id]
-    local col, row = (i - 1) % 4, math.floor((i - 1) / 4)
-    local cx, cy = 200 + col * 400, 260 + row * 420
-    local k = sp.def.scale
+    local col, row = (i - 1) % 5, math.floor((i - 1) / 5)
+    local cx, cy = 160 + col * 320, 200 + row * 330
+    local k = sp.def.scale * 0.8
     lg.setColor(1, 1, 1)
     lg.draw(sp.img, cx - sp.def.ax * k, cy - sp.def.ay * k, 0, k, k)
+    local foot = sp.def.foot or 4
+    local fw = (type(foot) == "table" and foot[1] or foot) / 2 * 0.8
+    local fh = (type(foot) == "table" and foot[2] or foot) / 2 * 0.8
     local pts = {}
-    for _, c in ipairs({ { -2, -2 }, { 2, -2 }, { 2, 2 }, { -2, 2 } }) do
+    for _, c in ipairs({ { -fw, -fh }, { fw, -fh }, { fw, fh }, { -fw, fh } }) do
       local x, y = Iso.toScreen(c[1], c[2])
       pts[#pts + 1] = cx + x
       pts[#pts + 1] = cy + y
@@ -115,7 +122,7 @@ local function drawCalibration()
     lg.polygon("line", pts)
     lg.setColor(1, 0, 1)
     lg.circle("fill", cx, cy, 3)
-    UI.text(id, cx - 100, cy + 150, G.font.m, { 1, 1, 1 }, 200, "center")
+    UI.text(id, cx - 150, cy + 110, G.font.s, { 1, 1, 1 }, 300, "center")
   end
 end
 
@@ -123,6 +130,8 @@ function love.load(args)
   love.graphics.setDefaultFilter("linear", "linear")
   G.init()
   S.loadSprites()
+  S.loadProps()
+  require("src.units").load()
   for i, a in ipairs(args or {}) do
     if a == "--calibrate" then calibrate = true end
     if a == "--autotest" then autotest = { t = 0, step = 1, hq = D.HQS[1] } end
@@ -133,6 +142,14 @@ function love.load(args)
     end
     if a == "--process-art" then
       require("tools.process_art")(args[i + 1])
+      love.event.quit()
+      return
+    end
+    if a == "--process-units" then
+      toolRun = true
+      local dirs = {}
+      for j = i + 1, #args do dirs[#dirs + 1] = args[j] end
+      require("tools.process_units")(dirs)
       love.event.quit()
       return
     end
@@ -155,8 +172,8 @@ local function updateCamera(dt)
   end
   cam.x = cam.x + dx * speed
   cam.y = cam.y + dy * speed
-  cam.x = math.max(-48 * 32, math.min(48 * 32, cam.x))
-  cam.y = math.max(0, math.min(96 * 16, cam.y))
+  cam.x = math.max(-Game.MAP_H * 32, math.min(Game.MAP_W * 32, cam.x))
+  cam.y = math.max(0, math.min((Game.MAP_W + Game.MAP_H) * 16, cam.y))
 end
 
 local function runAutotest(dt)
@@ -169,7 +186,28 @@ local function runAutotest(dt)
       game.selection = { game.survivors[1] }
       lg.captureScreenshot("shot_base.png")
     end },
+    { 2.1, function()
+      a.zoom = game.camera.zoom
+      game.camera.zoom = 1.6
+    end },
+    { 2.2, function()
+      lg.captureScreenshot("shot_units.png")
+    end },
+    { 2.3, function() game.camera.zoom = a.zoom end },
     { 2.4, function()
+      -- send the scouts and scavengers to search the nearest building outside
+      game.selection = {}
+      for _, s in ipairs(game.survivors) do
+        if s.group == "Scouting" or s.group == "Scavenging" then game.selection[#game.selection + 1] = s end
+      end
+      local gx, gy = game.B + 24.5, game.F_MAX + 1
+      local best, bd
+      for _, site in ipairs(game.sites) do
+        local d = (site.cx - gx) ^ 2 + (site.cy - gy) ^ 2
+        if not best or d < bd then best, bd = site, d end
+      end
+      a.site = best
+      if best then game:orderSearch(best) end
       game.selection = {}
       game.speed = 3
       game.director.timer = 2
@@ -178,8 +216,9 @@ local function runAutotest(dt)
       game:setMobilized("Combat", true)
       lg.captureScreenshot("shot_alert.png")
     end },
+    { 6.5, function() lg.captureScreenshot("shot_dusk.png") end },
     { 13, function()
-      game.camera.zoom = 1.4
+      game.camera.zoom = 1.8
       lg.captureScreenshot("shot_wave.png")
     end },
     { 22, function()
@@ -188,7 +227,30 @@ local function runAutotest(dt)
     end },
     { 30, function()
       a.report()
+      game.camera.x, game.camera.y = Iso.toScreen(a.site.cx, a.site.cy)
+      game.camera.zoom = 1.3
       lg.captureScreenshot("shot_late.png")
+    end },
+    { 30.2, function()
+      game.camera.x, game.camera.y = Iso.toScreen(game.hq.cx + 6, game.hq.cy + 6)
+      game.camera.zoom = 0.5
+    end },
+    { 30.6, function() lg.captureScreenshot("shot_town.png") end },
+    { 31, function()
+      game.camera.x, game.camera.y = Iso.toScreen(game.hq.cx + 1, game.hq.cy + 1)
+      game.camera.zoom = 1
+      -- bring the expedition home with whatever it found
+      game.selection = {}
+      local carried = 0
+      for _, s in ipairs(game.survivors) do
+        if s.group == "Scouting" or s.group == "Scavenging" then
+          game.selection[#game.selection + 1] = s
+          for _, n in pairs(s.carry or {}) do carried = carried + n end
+        end
+      end
+      print("AUTOTEST carried home: " .. carried)
+      game:orderMove(game.hq.cx, game.hq.wy2 + 2, "move")
+      game.selection = {}
     end },
     { 45, function()
       a.report()
@@ -203,10 +265,12 @@ local function runAutotest(dt)
   a.report = function()
     local states = {}
     for _, s in ipairs(game.survivors) do states[#states + 1] = s.state end
-    print(string.format("AUTOTEST t=%.0f phase=%s wave=%d zombies=%d kills=%d living=%d food=%.1f ammo=%d scrap=%d rifles=%d over=%s states=%s",
-      game.time, game.director.phase, game.director.wave, #game.zombies, game.stats.kills, game:livingCount(),
-      game.res.food, game.res.ammo, game.res.scrap, game.stock.rifle, tostring(game.over and game.over.reason),
-      table.concat(states, ",")))
+    local site = a.site and a.site.site
+    print(string.format("AUTOTEST t=%.0f phase=%s wave=%d waveZ=%d allZ=%d kills=%d living=%d food=%.1f ammo=%d scrap=%d rifles=%d over=%s site=%s(%s %.1f/%.1f) states=%s",
+      game.time, game.director.phase, game.director.wave, game:waveZombieCount(), #game.zombies, game.stats.kills,
+      game:livingCount(), game.res.food, game.res.ammo, game.res.scrap, game.stock.rifle,
+      tostring(game.over and game.over.reason), a.site and a.site.name or "-", site and tostring(site.searched) or "-",
+      site and site.progress or 0, site and site.work or 0, table.concat(states, ",")))
   end
   local s = steps[a.step]
   if s and a.t >= s[1] then
@@ -272,8 +336,11 @@ function love.mousepressed(x, y, b)
       return
     end
     local z = game:zombieAt(x, y)
+    local site = not z and game:siteAt(x, y)
     if z then
       game:orderFocus(z)
+    elseif site and site.site and not site.site.searched and #game:selectedActive() > 0 then
+      game:orderSearch(site)
     else
       local wx, wy = game.camera:screenToWorld(x, y)
       game:orderMove(wx, wy, "move")
@@ -304,6 +371,7 @@ function love.mousepressed(x, y, b)
 end
 
 function love.mousemoved(x, y, dx, dy)
+  if UI.minimapDrag and love.mouse.isDown(1) then UI.minimapJump(x, y) end
   if drag then drag.x1, drag.y1 = x, y end
   if panning and game then
     game.camera.x = game.camera.x - dx / game.camera.zoom
@@ -313,6 +381,7 @@ end
 
 function love.mousereleased(x, y, b)
   if b == 3 then panning = nil end
+  if b == 1 then UI.minimapDrag = false end
   if b ~= 1 or not drag or not game then
     drag = nil
     return
@@ -374,7 +443,7 @@ function love.keypressed(key)
     game:orderFallBack()
   elseif key == "m" then
     game:setMobilized(UI.tab, not game.groups[UI.tab].mobilized)
-  elseif key == "1" or key == "2" then
+  elseif D.GROUPS[tonumber(key) or 0] then
     local name = D.GROUPS[tonumber(key)]
     UI.tab = name
     if double then game:selectGroup(name) end

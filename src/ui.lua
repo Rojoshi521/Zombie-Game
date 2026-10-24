@@ -73,6 +73,14 @@ function UI.beginFrame()
 end
 
 function UI.mousepressed(x, y, b)
+  local m = UI.mm
+  if m and U.inRect(x, y, m.x, m.y, m.w, m.h) then
+    if b == 1 then
+      UI.minimapDrag = true
+      UI.minimapJump(x, y)
+    end
+    return true
+  end
   if b ~= 1 then
     for _, p in ipairs(UI.panels) do
       if U.inRect(x, y, p[1], p[2], p[3], p[4]) then return true end
@@ -94,7 +102,6 @@ end
 
 ----------------------------------------------------------------------------
 
-local PHASE_NAMES = { prepare = "PREPARE", alert = "ALERT", wave = "WAVE", recover = "RECOVER" }
 
 local function topBar(game, w)
   panel(0, 0, w, 38)
@@ -116,14 +123,17 @@ local function topBar(game, w)
   chip("SURVIVORS", tostring(game:livingCount()))
 
   local d = game.director
-  local phase = PHASE_NAMES[d.phase]
   local label
-  if d.phase == "prepare" or d.phase == "alert" or d.phase == "recover" then
-    label = string.format("WAVE %d  ·  %s  %s", d.phase == "prepare" and d.wave + 1 or d.wave, phase, U.formatTime(d.timer))
+  if d.phase == "day" then
+    label = string.format("DAY %d  ·  SUNSET IN %s", d.wave + 1, U.formatTime(d.timer))
+  elseif d.phase == "dusk" then
+    label = string.format("DUSK  ·  NIGHT %d FALLS IN %s", d.wave, U.formatTime(d.timer))
+  elseif d.phase == "dawn" then
+    label = string.format("DAWN  ·  DAY %d IN %s", d.wave + 1, U.formatTime(d.timer))
   else
-    label = string.format("WAVE %d  ·  %d infected left", d.wave, #game.zombies + #d.queue)
+    label = string.format("NIGHT %d  ·  %d infected left", d.wave, game:waveZombieCount() + #d.queue)
   end
-  local col = d.phase == "wave" and COL.bad or (d.phase == "alert" and COL.alert or COL.amber)
+  local col = d.phase == "night" and COL.bad or (d.phase == "dusk" and COL.alert or COL.amber)
   text(label, 0, 9, G.font.l, col, w, "center")
 
   local bx = w - 10
@@ -140,10 +150,10 @@ local function topBar(game, w)
   local cost = game:repairCost()
   if cost > 0 then
     rbutton(string.format("Repair (%d scrap)", cost), 150, function() game:repairWalls() end,
-      { disabled = d.phase == "wave" or game.res.scrap <= 0 })
+      { disabled = d.phase == "night" or game.res.scrap <= 0 })
   end
-  if d.phase == "prepare" then
-    rbutton("Call wave early", 130, function() d:callEarly() end, { color = { 0.38, 0.12, 0.09 } })
+  if d.phase == "day" then
+    rbutton("Call night early", 130, function() d:callEarly() end, { color = { 0.38, 0.12, 0.09 } })
   end
 end
 
@@ -166,7 +176,7 @@ local function messages(game, w)
 end
 
 local function groupPanel(game, w, h)
-  local pw, ph = 620, 236
+  local pw, ph = 790, 236
   local x, y = 10, h - ph - 10
   panel(x, y, pw, ph)
 
@@ -174,8 +184,10 @@ local function groupPanel(game, w, h)
   for i, name in ipairs(D.GROUPS) do
     local members = game:groupMembers(name)
     local label = string.format("%d  %s (%d)", i, name, #members)
-    button(tx, y + 8, 150, 26, label, function() UI.tab = name end, { active = UI.tab == name })
-    tx = tx + 156
+    button(tx, y + 8, 146, 26, label, function() UI.tab = name end, { active = UI.tab == name })
+    G.setc(D.GROUP_COLORS[name])
+    lg.rectangle("fill", tx + 3, y + 30, 140, 2)
+    tx = tx + 150
   end
   local anyOff = false
   for _, name in ipairs(D.GROUPS) do
@@ -264,7 +276,7 @@ local function profilePanel(game, w, h)
   end
 
   local s = sel[1]
-  local ph = 486
+  local ph = 530
   panel(x, y, pw, ph)
   local cy = y + 10
   text(s.name, x + 12, cy, G.font.l)
@@ -281,6 +293,11 @@ local function profilePanel(game, w, h)
   cy = cy + 16
   local wpn = D.WEAPONS[s.weapon or "fists"]
   text("Weapon: " .. wpn.name, x + 12, cy, G.font.s, COL.dim)
+  if s.carry then
+    local parts = {}
+    for k, n in pairs(s.carry) do parts[#parts + 1] = n .. " " .. k end
+    text("Carrying: " .. table.concat(parts, ", "), x + 140, cy, G.font.s, COL.amber, pw - 152)
+  end
 
   cy = cy + 24
   text("CORE TRAITS", x + 12, cy, G.font.s, COL.dim)
@@ -325,23 +342,30 @@ local function profilePanel(game, w, h)
   end
   cy = cy + 54
 
-  local other = s.group == "Combat" and "Agriculture" or "Combat"
-  button(x + 12, y + ph - 36, pw - 24, 26, "Reassign to " .. other, function()
-    s.group = other
-    if s:isActive() then
-      if game.groups[other].mobilized then s:mobilize(game) else s:returnToWork(game) end
+  text("Reassign to:", x + 12, y + ph - 56, G.font.s, COL.dim)
+  local bx = x + 12
+  local bw = (pw - 24 - 8) / 3
+  for _, other in ipairs(D.GROUPS) do
+    if other ~= s.group then
+      button(bx, y + ph - 38, bw, 26, other, function()
+        s.group = other
+        if s:isActive() then
+          if game.groups[other].mobilized then s:mobilize(game) else s:returnToWork(game) end
+        end
+        game:message(s.name .. " now works with " .. other .. ".")
+      end, { disabled = not s:isActive(), font = G.font.s })
+      bx = bx + bw + 4
     end
-    game:message(s.name .. " now works with " .. other .. ".")
-  end, { disabled = not s:isActive() })
+  end
 end
 
 local function alertBanner(game, w, h)
   local d = game.director
-  if d.phase ~= "alert" then return end
+  if d.phase ~= "dusk" then return end
   local pulse = 0.6 + 0.4 * math.sin(game.time * 6)
   local names = {}
   for i, e in ipairs(d.edges) do names[i] = e.name:upper() end
-  local msg = string.format("WAVE %d INCOMING FROM THE %s  ·  %d", d.wave, table.concat(names, " & "), math.ceil(d.timer))
+  local msg = string.format("NIGHT %d  ·  THE HORDE COMES FROM THE %s  ·  %d", d.wave, table.concat(names, " & "), math.ceil(d.timer))
   local tw = G.font.xl:getWidth(msg)
   lg.setColor(0.2, 0.02, 0.01, 0.7)
   lg.rectangle("fill", (w - tw) / 2 - 18, h * 0.22 - 8, tw + 36, 48, 4)
@@ -361,8 +385,25 @@ local function tooltip(game)
     lines = { z.def.name, string.format("%d / %d", math.ceil(z.hp), math.ceil(z.maxhp)) }
   else
     local s = game:survivorAt(mx, my)
+    local site = not s and game:siteAt(mx, my)
     if s then
       lines = { s.name, s.group .. " · " .. s:stateLabel() }
+    elseif site then
+      lines = { site.name }
+      local info = site.site
+      if not info then
+        lines[2] = "Nothing worth taking."
+      elseif info.searched then
+        lines[2] = "Searched."
+      elseif not info.known then
+        lines[2] = "Not scouted yet. Send someone close to see what's inside."
+      else
+        local parts = {}
+        for k, n in pairs(info.loot) do parts[#parts + 1] = "~" .. n .. " " .. k end
+        lines[2] = #parts > 0 and ("Inside: " .. table.concat(parts, ", ")) or "Looks picked clean."
+        lines[3] = "Select survivors and right-click to search it. Scavengers are fastest."
+        if info.progress > 0 then lines[4] = string.format("Searched %d%%", info.progress / info.work * 100) end
+      end
     else
       local st = game:structureAt(mx, my)
       if st and st.name then
@@ -394,13 +435,107 @@ local function tooltip(game)
   end
 end
 
+----------------------------------------------------------------------------
+-- Minimap: the map as a diamond, explored ground only.
+
+local function rebuildMinimap(game)
+  local W, H = game.MAP_W, game.MAP_H
+  UI.mmData = UI.mmData or love.image.newImageData(W, H)
+  local data = UI.mmData
+  local map = game.map
+  for cy = 1, H do
+    for cx = 1, W do
+      local i = (cy - 1) * W + cx
+      local f = game.fog[i]
+      if f == 0 then
+        data:setPixel(cx - 1, cy - 1, 0, 0, 0, 0)
+      else
+        local r, g, b = 0.22, 0.16, 0.11
+        local s = map.structAt[i]
+        if game.townRoad[i] then r, g, b = 0.33, 0.32, 0.31 end
+        if s and s.town and s.blocking then r, g, b = 0.48, 0.40, 0.32
+        elseif s and s.town then r, g, b = 0.26, 0.30, 0.18
+        elseif s and s.blocking then r, g, b = 0.85, 0.58, 0.26 end
+        local k = f == 2 and 1 or 0.55
+        data:setPixel(cx - 1, cy - 1, r * k, g * k, b * k, 1)
+      end
+    end
+  end
+  if UI.mmImg then UI.mmImg:replacePixels(data) else
+    UI.mmImg = lg.newImage(data)
+    UI.mmImg:setFilter("nearest", "nearest")
+  end
+  game.minimapDirty = false
+end
+
+local function mmPoint(m, wx, wy)
+  return m.cx + (wx - wy) * m.kx, m.y + (wx + wy) * m.ky
+end
+
+function UI.minimapJump(x, y)
+  local m, game = UI.mm, UI.game
+  if not m or not game then return end
+  local a, b = (x - m.cx) / m.kx, (y - m.y) / m.ky
+  local wx, wy = (a + b) / 2, (b - a) / 2
+  local Iso = require("src.iso")
+  game.camera.x, game.camera.y = Iso.toScreen(wx, wy)
+end
+
+local function minimap(game, w, h)
+  if game.minimapDirty or not UI.mmImg then rebuildMinimap(game) end
+  local mw, mh = 260, 130
+  local x, y = w - mw - 14, h - mh - 14
+  panel(x - 4, y - 4, mw + 8, mh + 8)
+  local W = game.MAP_W
+  local m = { x = x, y = y, w = mw, h = mh, cx = x + mw / 2, kx = mw / 2 / W, ky = mh / 2 / W }
+  UI.mm = m
+
+  lg.push()
+  lg.translate(m.cx, y)
+  lg.scale(m.kx, m.ky)
+  lg.rotate(math.pi / 4)
+  lg.scale(math.sqrt(2))
+  lg.setColor(1, 1, 1)
+  lg.draw(UI.mmImg, 0, 0)
+  lg.pop()
+
+  for _, z in ipairs(game.zombies) do
+    if game:fogAt(z.x, z.y) == 2 then
+      local px, py = mmPoint(m, z.x, z.y)
+      lg.setColor(0.95, 0.2, 0.15)
+      lg.rectangle("fill", px - 1, py - 1, 2, 2)
+    end
+  end
+  for _, s in ipairs(game.survivors) do
+    if s.state ~= "dead" then
+      local px, py = mmPoint(m, s.x, s.y)
+      G.setc(D.GROUP_COLORS[s.group], 1.3)
+      lg.rectangle("fill", px - 1.5, py - 1.5, 3, 3)
+    end
+  end
+  local cam = game.camera
+  local pts = {}
+  for _, c in ipairs({ { 0, 0 }, { w, 0 }, { w, h }, { 0, h } }) do
+    local wx, wy = cam:screenToWorld(c[1], c[2])
+    local px, py = mmPoint(m, wx, wy)
+    pts[#pts + 1] = px
+    pts[#pts + 1] = py
+  end
+  lg.setScissor(x, y, mw, mh)
+  lg.setColor(1, 1, 1, 0.7)
+  lg.setLineWidth(1)
+  lg.polygon("line", pts)
+  lg.setScissor()
+end
+
 local HELP = {
   { "Left-click / drag", "Select survivors (Shift adds)" },
   { "Right-click ground", "Move selected (they will not shoot while moving)" },
   { "A, then left-click", "Attack-move: fight anything met on the way" },
   { "Right-click a zombie", "Focus fire" },
+  { "Right-click a building", "Search it for loot (carry it home to use it)" },
   { "H / S / F", "Hold position · Stop · Fall back to rally point" },
-  { "1 / 2", "Switch group tab (double-tap selects the group)" },
+  { "1 - 4", "Switch group tab (double-tap selects the group)" },
   { "M", "Mobilize / return the current group" },
   { "Arrows, screen edge, middle-drag", "Pan the camera" },
   { "Mouse wheel", "Zoom" },
@@ -420,20 +555,22 @@ local function helpOverlay(w, h)
     cy = cy + 21
   end
   cy = cy + 10
-  text("Prepare between waves, mobilize groups when scouts raise the alarm, and send everyone back to work " ..
-    "afterwards: a mobilized farmer grows no food. Mobilizing survivors physically walk to the armory for gear, " ..
+  text("Days are for scouting, scavenging and repairs; the horde comes at night. Get expeditions home by dusk, " ..
+    "mobilize when scouts raise the alarm and send everyone back to work at dawn: a mobilized farmer grows no food. Mobilizing survivors physically walk to the armory for gear, " ..
     "so plan for the walk.", x + 24, cy, G.font.s, COL.dim, pw - 48)
   button(x + pw / 2 - 60, y + ph - 40, 120, 28, "Close", function() UI.help = false end)
 end
 
 function UI.draw(game)
   local w, h = lg.getDimensions()
+  UI.game = game
   UI.beginFrame()
   topBar(game, w)
   messages(game, w)
   alertBanner(game, w, h)
   groupPanel(game, w, h)
   profilePanel(game, w, h)
+  minimap(game, w, h)
 
   if UI.rallyMode then
     text("Click the map to place the " .. UI.rallyMode .. " rally point · right-click to cancel",
@@ -451,7 +588,7 @@ function UI.draw(game)
     lg.rectangle("fill", 0, 0, w, h)
     text("THE SETTLEMENT HAS FALLEN", 0, h * 0.32, G.font.title, COL.bad, w, "center")
     text(game.over.reason, 0, h * 0.32 + 84, G.font.l, COL.text, w, "center")
-    text(string.format("Waves reached: %d  ·  Infected killed: %d  ·  Survivors lost: %d",
+    text(string.format("Nights survived: %d  ·  Infected killed: %d  ·  Survivors lost: %d",
       game.over.wave, game.stats.kills, game.stats.lost), 0, h * 0.32 + 116, G.font.m, COL.dim, w, "center")
     button(w / 2 - 90, h * 0.32 + 160, 180, 36, "Back to menu", function() UI.onRestart() end, { font = G.font.l })
   end

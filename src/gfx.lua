@@ -240,12 +240,36 @@ end
 function G.flushGlows()
   lg.setBlendMode("add")
   for _, g in ipairs(G.glows) do
-    lg.setColor(g[4], g[5], g[6], g[7])
+    lg.setColor(g[4], g[5], g[6], g[7] * G.glowScale)
     local s = g[3] / 32
     lg.draw(G.glowImg, g[1], g[2], 0, s, g[8] and s * 0.5 or s, 32, 32)
   end
   lg.setBlendMode("alpha")
   G.glows = {}
+end
+
+-- Glow layers of painted art, queued with the same transform as the art and
+-- added on top once the darkness has been applied.
+G.emissives = {}
+G.glowScale = 1 -- dimmed by day, when painted lights hardly show
+
+function G.queueEmissive(img, quad, x, y, sx, sy, ox, oy, ky, a)
+  local e = G.emissives
+  e[#e + 1] = { img, quad, x, y, sx, sy, ox, oy, ky, a or 1 }
+end
+
+function G.flushEmissives()
+  lg.setBlendMode("add")
+  for _, e in ipairs(G.emissives) do
+    lg.setColor(1, 1, 1, e[10] * G.glowScale)
+    if e[2] then
+      lg.draw(e[1], e[2], e[3], e[4], 0, e[5], e[6], e[7], e[8], 0, e[9])
+    else
+      lg.draw(e[1], e[3], e[4], 0, e[5], e[6], e[7], e[8], 0, e[9])
+    end
+  end
+  lg.setBlendMode("alpha")
+  G.emissives = {}
 end
 
 -- Lights are queued during the scene and drawn additively into the light map,

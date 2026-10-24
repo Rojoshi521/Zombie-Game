@@ -27,8 +27,98 @@ function S.loadSprites()
   end
 end
 
+-- Town sprites carry their own anchors (assets/town/index.lua). Their scale
+-- depends on the footprint they are given, so each size gets its own entry.
+function S.townSprite(id, size)
+  local key = id .. "@" .. size
+  if S.sprites[key] then return key end
+  S.townIndex = S.townIndex or (love.filesystem.getInfo("assets/town/index.lua")
+    and love.filesystem.load("assets/town/index.lua")() or {})
+  local meta = S.townIndex[id]
+  if not meta then return nil end
+  local img = lg.newImage("assets/town/" .. id .. ".png", { mipmaps = true })
+  local glow = lg.newImage("assets/town/" .. id .. "_glow.png", { mipmaps = true })
+  img:setMipmapFilter("linear")
+  glow:setMipmapFilter("linear")
+  S.sprites[key] = {
+    img = img, glow = glow,
+    def = { ax = meta.ax, ay = meta.ay, scale = size * 64 / meta.plate, foot = size },
+  }
+  return key
+end
+
 function S.spriteFor(s)
-  return s.kind == "hq" and S.sprites[s.hqId] or nil
+  return s.sprite and S.sprites[s.sprite] or nil
+end
+
+----------------------------------------------------------------------------
+-- Painted props
+
+S.props = {}
+
+function S.loadProps()
+  for id, def in pairs(D.PROPS) do
+    local path = "assets/props/" .. id .. ".png"
+    if love.filesystem.getInfo(path) then
+      local img = lg.newImage(path, { mipmaps = true })
+      local glow = lg.newImage("assets/props/" .. id .. "_glow.png", { mipmaps = true })
+      img:setMipmapFilter("linear")
+      glow:setMipmapFilter("linear")
+      local p = { img = img, glow = glow, def = def }
+      if def.wall then
+        local w, h = img:getDimensions()
+        p.cw = (def.u1 - def.u0) / def.cells
+        p.k = 32 / p.cw -- one slice spans one tile: 32 px across on screen
+        p.quads = {}
+        for i = 1, def.cells do
+          p.quads[i] = lg.newQuad(def.u0 + (i - 1) * p.cw, 0, p.cw, h, w, h)
+        end
+      end
+      S.props[id] = p
+    end
+  end
+end
+
+-- A prop standing on world point (x, y). Returns false if its art is missing.
+function S.drawPoint(id, x, y, tint, flicker)
+  local p = S.props[id]
+  if not p then return false end
+  local d = p.def
+  local sx, sy = P(x, y, 0)
+  local k = d.scale
+  local c = tint or 1
+  flicker = flicker or 1
+  lg.setColor(c, c, c)
+  lg.draw(p.img, sx, sy, 0, k, k, d.ax, d.ay)
+  G.queueEmissive(p.glow, nil, sx, sy, k, k, d.ax, d.ay, 0, flicker)
+  if d.light then
+    local lx, ly = sx + (d.light[1] - d.ax) * k, sy + (d.light[2] - d.ay) * k
+    local st = d.light[3] * flicker
+    G.glow(lx, ly, 12 * st, { 1, 0.92, 0.75 }, 0.8)
+    G.glow(lx, ly, 40 * st, C.amber, 0.25)
+    G.lightAt(lx, (ly + sy) / 2 + 10, 200 * st, G.LIGHT, 1.05, 150 * st)
+  end
+  return true
+end
+
+-- One tile of a fence or gate: its own vertical slice of the wall painting,
+-- sheared so the wall's bottom edge follows the tile grid.
+local function drawWall(s)
+  local p = S.props[s.gate and "gate" or "fence"]
+  if not p then return false end
+  local d = p.def
+  local idx = s.strip or ((s.dir == "x" and s.x1 or s.y1) % d.cells)
+  local quad = p.quads[idx + 1]
+  local uc = d.u0 + (idx + 0.5) * p.cw
+  local oy = d.base + d.slope * (uc - d.u0)
+  local fx = s.dir == "x" and 1 or -1
+  local sx, sy = P(s.cx, s.cy, 0)
+  local c = 0.5 + 0.5 * (s.hp / s.maxhp)
+  local ky = 0.5 - d.slope
+  lg.setColor(c, c, c)
+  lg.draw(p.img, quad, sx, sy, 0, fx * p.k, p.k, p.cw / 2, oy, 0, ky)
+  G.queueEmissive(p.glow, quad, sx, sy, fx * p.k, p.k, p.cw / 2, oy, ky, 1)
+  return true
 end
 
 local function spritePos(s, sp)
@@ -57,14 +147,27 @@ end
 local function drawSpriteBody(s)
   local sp = S.spriteFor(s)
   local x, y, k = spritePos(s, sp)
-  lg.stencil(function() footprintStencil(s, 0.45) end, "replace", 1)
-  lg.setStencilTest("greater", 0)
   lg.setColor(1, 1, 1)
-  lg.draw(sp.img, x, y, 0, k, k)
-  lg.setStencilTest()
-  -- the painting already has its own lighting baked in, so light it fully
+  if s.flat then
+    -- walkable ground art (the garden): always under the people on it
+    lg.draw(sp.img, x, y, 0, k, k)
+  else
+    lg.stencil(function() footprintStencil(s, 0.45) end, "replace", 1)
+    lg.setStencilTest("greater", 0)
+    lg.draw(sp.img, x, y, 0, k, k)
+    lg.setStencilTest()
+  end
   local w, h = sp.img:getWidth() * k, sp.img:getHeight() * k
-  G.lightAt(x + w / 2, y + h * 0.55, w * 0.68, G.LIGHT, 1.7, h * 0.62)
+  if s.fire then
+    -- burning wrecks light the street around them
+    local sx, sy = P(s.cx, s.cy, 0)
+    local f = 0.8 + 0.2 * math.sin(love.timer.getTime() * 11 + s.seed) * math.sin(love.timer.getTime() * 6.3)
+    G.glow(sx, sy - 14, 30 * f, { 1, 0.55, 0.2 }, 0.45)
+    G.lightAt(sx, sy, 230 * f, { 1, 0.62, 0.3 }, 1.2, 160 * f)
+  elseif not s.town then
+    -- base paintings have their lighting baked in, so light them fully
+    G.lightAt(x + w / 2, y + h * 0.55, w * 0.68, G.LIGHT, 1.7, h * 0.62)
+  end
 end
 
 -- Lit windows, lamps and neon, added on top after the darkness is applied.
@@ -73,7 +176,7 @@ function S.drawEmissive(s, t)
   if not sp then return end
   local x, y, k = spritePos(s, sp)
   local f = 0.85 + 0.15 * math.sin(t * 5.3 + s.seed) * math.sin(t * 2.1)
-  lg.setColor(f, f * 0.95, f * 0.9, 0.9)
+  lg.setColor(f, f * 0.95, f * 0.9, 0.9 * G.glowScale)
   lg.draw(sp.glow, x, y, 0, k, k)
 end
 
@@ -123,12 +226,31 @@ end
 
 S.DEFS = {
   hq = { w = 4, h = 4, hp = 1500, blocking = true, barZ = 4.2 },
+  barracks = {
+    w = 3, h = 3, hp = 650, blocking = true, barZ = 2.6, name = "School Bus Barracks", sprite = "school_bus_barracks",
+    desc = "Combat drills here. A repurposed school bus for housing and training combat personnel.",
+  },
+  hydroponics = {
+    w = 3, h = 3, hp = 500, blocking = true, barZ = 2.2, name = "Hydroponic Container", sprite = "hydroponic_shipping_containers",
+    desc = "Agriculture works here too. Compact technical farming in shipping containers.",
+  },
+  lookout = {
+    w = 3, h = 3, hp = 500, blocking = true, barZ = 3.2, name = "Water Park Lifeguard Tower", sprite = "water_park_lifeguard_tower",
+    desc = "Scouting keeps watch here. An elevated station; scouts slide down to respond.",
+  },
+  salvage = {
+    w = 3, h = 3, hp = 550, blocking = true, barZ = 1.8, name = "Garbage Compactor Truck", sprite = "garbage_compactor_truck",
+    desc = "Scavenging sorts scrap here, and it slowly yields more.",
+  },
+  -- a town building: size, sprite and solidity are set per instance
+  town = { w = 2, h = 2, hp = 1, blocking = true },
+  wreck = { w = 1, h = 1, hp = 1, blocking = true },
   garden = {
-    w = 3, h = 3, hp = 1, blocking = false, flat = true, name = "Salvage Garden",
+    w = 4, h = 4, hp = 1, blocking = false, flat = true, name = "Salvage Garden", sprite = "salvage_garden",
     desc = "Agriculture works here. Traditional low-tech crop growing.",
   },
   armory = {
-    w = 3, h = 2, hp = 700, blocking = true, barZ = 1.8, name = "Box Truck Armory",
+    w = 4, h = 3, hp = 700, blocking = true, barZ = 2.4, name = "Box Truck Armory", sprite = "box_truck_armory",
     desc = "Stores rifles and pistols and issues them to mobilizing groups. Combat drills in its yard.",
   },
   fence = { w = 1, h = 1, hp = 220, blocking = true, barZ = 1.1, name = "Salvage Fence", desc = "Zombies must smash through." },
@@ -150,6 +272,7 @@ function S.new(kind, x1, y1, opts)
   if opts then
     for k, v in pairs(opts) do s[k] = v end
   end
+  s.sprite = s.sprite or def.sprite or (kind == "hq" and s.hqId) or nil
   s.wx1, s.wy1 = x1 - 1, y1 - 1
   s.wx2, s.wy2 = s.wx1 + s.w, s.wy1 + s.h
   s.cx, s.cy = (s.wx1 + s.wx2) / 2, (s.wy1 + s.wy2) / 2
@@ -283,53 +406,6 @@ local function drawWaterTower(s, t)
   crates(x1 + 0.15, y2 - 0.6, 2, s.seed)
   G.lampPost(x1 + 0.1, y2 - 0.1, 2.1)
   G.lampPost(x2 - 0.1, y1 + 0.1, 2.1)
-end
-
-local function drawHospital(s, t)
-  local x1, y1, x2, y2 = s.wx1, s.wy1, s.wx2, s.wy2
-  G.flat(x1 + 0.05, y1 + 0.05, x2 - 0.05, y2 - 0.05, C.yard)
-  local bx1, by1, bx2, by2 = x1 + 0.25, y1 + 0.25, x2 - 0.3, y2 - 0.55
-  G.box(bx1, by1, bx2, by2, 0, 2.2, C.concrete)
-
-  for i = 0, 4 do
-    local wx = bx1 + 0.22 + i * 0.66
-    for row = 0, 1 do
-      local z = 0.35 + row * 0.95
-      G.windowY(by2, wx, wx + 0.34, z, z + 0.42, hash(s.seed, i, row) > 0.45)
-    end
-  end
-  for i = 0, 3 do
-    local wy = by1 + 0.25 + i * 0.7
-    for row = 0, 1 do
-      local z = 0.35 + row * 0.95
-      G.windowX(bx2, wy, wy + 0.34, z, z + 0.42, hash(s.seed, i + 7, row) > 0.55)
-    end
-  end
-  -- scorch marks from the fire
-  G.quadY(by2, bx1 + 1.6, bx1 + 2.6, 1.2, 2.2, { 0, 0, 0, 0.4 })
-  G.quadX(bx2, by1 + 0.2, by1 + 1.2, 1.5, 2.2, { 0, 0, 0, 0.45 })
-
-  -- burnt-out upper floor on the back half
-  G.box(bx1, by1, bx2, by1 + 1.5, 2.2, 3.0, { 0.31, 0.28, 0.25 })
-  G.box(bx1 + 0.1, by1 + 1.5, bx1 + 1.0, by1 + 1.9, 2.2, 2.55, { 0.28, 0.25, 0.22 })
-  G.quadY(by1 + 1.5, bx1 + 1.3, bx1 + 2.3, 2.35, 2.75, { 0.07, 0.06, 0.05 })
-
-  -- red cross sign
-  local mx = (bx1 + bx2) / 2
-  G.quadY(by2, mx - 0.35, mx + 0.35, 1.72, 2.12, C.bone)
-  G.quadY(by2, mx - 0.27, mx + 0.27, 1.86, 1.98, { 0.75, 0.1, 0.1 })
-  G.quadY(by2, mx - 0.06, mx + 0.06, 1.76, 2.08, { 0.75, 0.1, 0.1 })
-
-  -- entrance canopy
-  G.quadY(by2, mx - 0.35, mx + 0.35, 0, 0.75, { 0.95, 0.7, 0.4 }, 0.6)
-  G.box(mx - 0.55, by2, mx + 0.55, by2 + 0.45, 0.8, 0.88, C.rust)
-  G.bannerX(bx2, by1 + 2.0, by1 + 2.7, 0.6, 1.9)
-
-  G.box(bx1 + 1.8, by1 + 0.3, bx1 + 2.8, by1 + 1.2, 3.0, 3.08, C.tarp)
-  antenna(bx2 - 0.3, by1 + 0.3, 3.0, 4.3, t)
-  crates(x2 - 0.55, y2 - 0.5, 2, s.seed)
-  G.lampPost(x1 + 0.1, y2 - 0.1, 2.0)
-  G.lampPost(x2 - 0.1, y1 + 0.1, 2.0)
 end
 
 ----------------------------------------------------------------------------
@@ -497,17 +573,23 @@ local function drawCrates(s, t)
   G.box(s.wx1 + 0.55, s.wy1 + 0.5, s.wx1 + 0.95, s.wy1 + 0.92, 0, 0.3, { 0.36, 0.30, 0.20 })
 end
 
-local HQ_DRAW = { farmhouse = drawFarmhouse, watertower = drawWaterTower, hospital = drawHospital }
+local HQ_DRAW = { farmhouse = drawFarmhouse, watertower = drawWaterTower }
 
 function S.draw(s, t)
   local k = s.kind
-  if k == "hq" then
-    if S.spriteFor(s) then drawSpriteBody(s) else (HQ_DRAW[s.hqId] or drawWaterTower)(s, t) end
+  local tint = 0.55 + 0.45 * (s.hp / s.maxhp)
+  if S.spriteFor(s) then drawSpriteBody(s)
+  elseif k == "hq" then (HQ_DRAW[s.hqId] or drawWaterTower)(s, t)
   elseif k == "armory" then drawArmory(s, t)
   elseif k == "garden" then drawGarden(s, t)
-  elseif k == "fence" or k == "gate" then drawFence(s, t)
-  elseif k == "tower" then drawTower(s, t)
-  elseif k == "crates" then drawCrates(s, t)
+  elseif k == "fence" or k == "gate" then
+    if not drawWall(s) then drawFence(s, t) end
+  elseif k == "tower" then
+    if not S.drawPoint("watchtower", s.cx, s.cy, tint) then drawTower(s, t) end
+  elseif k == "crates" then
+    if not S.drawPoint("crates", s.cx, s.cy, tint) then drawCrates(s, t) end
+  else
+    G.box(s.wx1 + 0.1, s.wy1 + 0.1, s.wx2 - 0.1, s.wy2 - 0.1, 0, 1.2, C.metal)
   end
 end
 

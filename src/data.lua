@@ -6,17 +6,91 @@ D.APTITUDES = {
   "Research", "Agriculture", "Fabrication", "Logistics", "Leadership",
 }
 
--- The groups that exist in this prototype. The other eight come later.
-D.GROUPS = { "Combat", "Agriculture" }
+-- The groups that exist in this prototype. The other six come later.
+D.GROUPS = { "Combat", "Scouting", "Scavenging", "Agriculture" }
 
 D.GROUP_COLORS = {
   Combat = { 0.70, 0.24, 0.19 },
+  Scouting = { 0.32, 0.56, 0.78 },
+  Scavenging = { 0.82, 0.60, 0.26 },
   Agriculture = { 0.43, 0.60, 0.27 },
 }
 
 D.GROUP_WORKPLACE = {
-  Combat = "Box Truck Armory (drilling)",
-  Agriculture = "Salvage Garden (farming)",
+  Combat = "School Bus Barracks (drilling)",
+  Scouting = "Lifeguard Tower (on watch)",
+  Scavenging = "Garbage Truck (sorting scrap)",
+  Agriculture = "Garden and Hydroponics (farming)",
+}
+
+D.GROUP_LOADOUT = { Combat = "rifle", Scouting = "pistol", Scavenging = "improvised", Agriculture = "improvised" }
+
+-- How far each survivor sees, in tiles. Scouts see much further.
+D.VISION = 5
+D.SCOUT_VISION = 8.5
+
+-- Town buildings (assets/town, cut from the terrain sheets). size is the
+-- footprint in tiles; loot names an entry in D.LOOT; solid buildings block.
+D.TOWN_HOUSES = {
+  { id = "blue_bungalow", name = "Small Blue Bungalow" },
+  { id = "brick_townhouse", name = "Red Brick Townhouse" },
+  { id = "ranch_house", name = "Beige Ranch House" },
+  { id = "green_cottage", name = "Green Cottage" },
+  { id = "split_level", name = "Yellow Split-Level" },
+  { id = "white_farmhouse", name = "White Farmhouse" },
+  { id = "brown_duplex", name = "Brown Duplex" },
+  { id = "aframe_cabin", name = "Teal A-Frame Cabin" },
+}
+D.TOWN_SHOPS = {
+  { id = "diner", name = "Diner", loot = "diner" },
+  { id = "game_store", name = "Game Store", loot = "office" },
+  { id = "grocery_store", name = "Grocery Store", loot = "grocery" },
+  { id = "corner_store", name = "Corner Store", loot = "store" },
+  { id = "hair_salon", name = "Hair Salon", loot = "office" },
+  { id = "barber_shop", name = "Barber Shop", loot = "office" },
+  { id = "vet_clinic", name = "Veterinary Clinic", loot = "clinic" },
+  { id = "doctors_office", name = "Doctor's Office", loot = "clinic" },
+  { id = "office_building", name = "Office Building", loot = "office" },
+  { id = "high_rise", name = "High Rise", loot = "highrise" },
+}
+D.TOWN_SPECIALS = {
+  { id = "police_station", name = "Police Station", loot = "police" },
+  { id = "grade_school", name = "Grade School", loot = "school" },
+  { id = "scrapyard", name = "Scrapyard", loot = "scrap" },
+  { id = "factory", name = "Run-Down Factory", loot = "scrap" },
+}
+D.TOWN_LOTS = {
+  { id = "grassy_field", name = "Grassy Field", flat = true },
+  { id = "parking_lot", name = "Parking Lot", flat = true, loot = "jam" },
+  { id = "pond", name = "Pond" },
+  { id = "hill", name = "Hill" },
+  { id = "dump", name = "Dump", loot = "dump" },
+  { id = "traffic_jam", name = "Traffic Jam", loot = "jam" },
+}
+-- One of each per town, each taking the middle of a block.
+D.TOWN_LANDMARKS = {
+  { id = "jail", name = "Jail", size = 4, loot = "jail", views = { "front", "back" } },
+  { id = "zoo", name = "Zoo", size = 3, loot = "zoo" },
+  { id = "soccer_field", name = "Soccer Field", size = 3, flat = true },
+}
+D.TOWN_WRECKS = { "broken_car", "broken_truck", "car_on_fire", "truck_on_fire" }
+
+-- Loot ranges { min, max }; rifle and pistol are chances of finding one.
+D.LOOT = {
+  house = { food = { 4, 12 }, scrap = { 2, 8 }, ammo = { 0, 8 }, pistol = 0.08 },
+  diner = { food = { 15, 30 } },
+  grocery = { food = { 25, 45 }, scrap = { 0, 5 } },
+  store = { food = { 8, 18 }, ammo = { 0, 12 }, scrap = { 2, 6 } },
+  office = { scrap = { 10, 22 }, food = { 0, 6 } },
+  clinic = { food = { 4, 10 }, scrap = { 4, 10 } },
+  highrise = { scrap = { 18, 32 }, food = { 6, 14 } },
+  school = { food = { 8, 16 }, scrap = { 6, 12 } },
+  police = { ammo = { 40, 80 }, rifle = 0.6, pistol = 0.7 },
+  scrap = { scrap = { 35, 60 } },
+  jail = { ammo = { 50, 90 }, scrap = { 10, 20 }, rifle = 0.9, pistol = 0.8 },
+  zoo = { food = { 20, 40 } },
+  dump = { scrap = { 20, 35 } },
+  jam = { scrap = { 8, 18 }, ammo = { 0, 12 } },
 }
 
 D.COMBAT_ATTRS = { "Accuracy", "Endurance", "Mobility", "Composure", "Awareness", "Handling" }
@@ -72,7 +146,6 @@ D.BACKGROUNDS = {
   { "Dental Hygienist", "Medicine", "Logistics" },
   { "Physical Therapist", "Medicine", "Combat" },
   { "Elder Care Worker", "Medicine", "Leadership" },
-  { "Hospital Custodian", "Medicine", "Engineering" },
   { "Mental Health Counselor", "Leadership", "Medicine" },
   { "Farmhand", "Agriculture", "Engineering" },
   { "Beekeeper", "Agriculture", "Research" },
@@ -177,17 +250,19 @@ D.HQS = {
     id = "broadcast", name = "Worn-Down Broadcast Station", passive = "Leadership",
     text = "Better coordinated training: survivors learn skills 40% faster.",
   },
-  {
-    id = "hospital", name = "Charred Hospital", passive = "Medicine",
-    text = "Quicker recovery: survivors heal 3x faster, and the downed last twice as long.",
-  },
 }
 
 -- Painted building sprites (made by tools/process_art.lua). ax, ay is the
 -- pixel that sits on the centre of the footprint; scale converts the art to
 -- world size.
 D.SPRITES = {
-  farmhouse = { ax = 398, ay = 268, scale = 0.48 },
+  water_park_lifeguard_tower = { ax = 388, ay = 342, scale = 0.36, foot = 3 },
+  garbage_compactor_truck = { ax = 398, ay = 211, scale = 0.36, foot = 3 },
+  box_truck_armory = { ax = 400, ay = 340, scale = 0.31, foot = { 4, 3 } },
+  salvage_garden = { ax = 400, ay = 290, scale = 0.36, foot = 4 },
+  school_bus_barracks = { ax = 395, ay = 300, scale = 0.36, foot = 3 },
+  hydroponic_shipping_containers = { ax = 422, ay = 280, scale = 0.36, foot = 3 },
+  farmhouse = { ax = 398, ay = 271, scale = 0.48 },
   watertower = { ax = 392, ay = 336, scale = 0.48 },
   ferriswheel = { ax = 393, ay = 346, scale = 0.48 },
   casino = { ax = 393, ay = 322, scale = 0.48 },
@@ -195,6 +270,20 @@ D.SPRITES = {
   cathedral = { ax = 390, ay = 333, scale = 0.48 },
   campus = { ax = 398, ay = 322, scale = 0.48 },
   coop = { ax = 398, ay = 280, scale = 0.48 },
+}
+
+-- Painted props (assets/props). Point props anchor (ax, ay) on the ground;
+-- light is the lamp or flame position in image pixels.
+-- Wall props are drawn as one vertical slice per tile: u0..u1 is the span of
+-- the image that covers `cells` tiles, and the bottom edge of the wall runs
+-- from (u0, base) with the given slope, sheared to the tile grid's 0.5.
+D.PROPS = {
+  watchtower = { ax = 112, ay = 240, scale = 0.45, light = { 30, 18, 1.3 } },
+  crates = { ax = 175, ay = 148, scale = 0.3 },
+  lamp = { ax = 84, ay = 205, scale = 0.42, light = { 84, 26, 1.0 } },
+  firebarrel = { ax = 128, ay = 183, scale = 0.3, light = { 128, 110, 1.1 } },
+  fence = { wall = true, u0 = 28, u1 = 262, cells = 3, base = 104, slope = 0.32 },
+  gate = { wall = true, u0 = 20, u1 = 300, cells = 3, base = 135, slope = 0.15 },
 }
 
 D.ZOMBIES = {

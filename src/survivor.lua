@@ -3,6 +3,7 @@ local D = require("src.data")
 local Iso = require("src.iso")
 local G = require("src.gfx")
 local Map = require("src.map")
+local Units = require("src.units")
 
 local P = Iso.toScreen
 local lg = love.graphics
@@ -55,6 +56,7 @@ function Survivor.generate(group)
   s.hp = s.maxhp
   s.group = group or s:bestGroup()
   s.skin = U.choice(D.SKIN_TONES)
+  s.look = love.math.random(1, 10) -- which portrait of their group they wear
   s.x, s.y, s.depth = 0, 0, 0
   s.rad = 0.22
   s.state = "work"
@@ -90,7 +92,15 @@ function Survivor:isActive()
 end
 
 function Survivor:speed()
-  return 2.1 * (0.85 + self.attr.Mobility * 0.03) * self:traitMul("speed")
+  local carrying = self.carry and 0.85 or 1
+  return 2.1 * (0.85 + self.attr.Mobility * 0.03) * self:traitMul("speed") * carrying
+end
+
+function Survivor:vision()
+  if self.group == "Scouting" then
+    return D.SCOUT_VISION + self.apt.Scouting * 0.15 + self.prof.Scouting * 0.15
+  end
+  return D.VISION + self.attr.Awareness * 0.1
 end
 
 function Survivor:weaponDef(game)
@@ -236,8 +246,13 @@ function Survivor:hurt(game, dmg)
     self.hp = 0
     self.state = "downed"
     self.downTimer = game.bleedOut
+    self.calm, self.rescueT = 0, 0
     self.path, self.order, self.focus = nil, nil, nil
-    game:message(self.name .. " is down! They have " .. game.bleedOut .. "s unless the wave ends.", "bad")
+    if game:inWalls(self.x, self.y) then
+      game:message(self.name .. " is down! They have " .. game.bleedOut .. "s unless the night ends or someone reaches them.", "bad")
+    else
+      game:message(self.name .. " is down in the town! Get someone to them within " .. game.bleedOut .. "s.", "bad")
+    end
   end
 end
 
@@ -259,15 +274,32 @@ function Survivor:update(game, dt)
 
   if self.state == "dead" then return end
   if self.state == "downed" then
-    if game.director.phase == "wave" then
+    -- Outside the walls, or at night, the downed bleed out. Safe inside by
+    -- day, they come round on their own.
+    if game.director:isNight() or not game:inWalls(self.x, self.y) then
       self.downTimer = self.downTimer - dt
-      if self.downTimer <= 0 then game:killSurvivor(self) end
+      if self.downTimer <= 0 then
+        game:killSurvivor(self)
+        return
+      end
+    else
+      self.calm = (self.calm or 0) + dt
+      if self.calm >= 12 then game:rescue(self) return end
+    end
+    -- a friend kneeling beside them, with no infected close, pulls them up
+    if game:nearestSurvivor(self.x, self.y, 1.1) and not game:nearestZombie(self.x, self.y, 2.5) then
+      self.rescueT = (self.rescueT or 0) + dt
+      if self.rescueT >= 3 then game:rescue(self) end
+    else
+      self.rescueT = 0
     end
     return
   end
 
+  if self.carry and game:inWalls(self.x, self.y) then game:deliver(self) end
+
   local phase = game.director.phase
-  if phase ~= "wave" and self.hp < self.maxhp and game.res.food > 0 then
+  if phase ~= "night" and self.hp < self.maxhp and game.res.food > 0 then
     self.hp = math.min(self.maxhp, self.hp + 0.8 * game.healRate * dt)
   end
   if game.res.food <= 0 then
@@ -334,6 +366,24 @@ function Survivor:updateSquad(game, dt)
     end
     return
   end
+  if o and o.kind == "search" then
+    if o.site.site.searched then
+      self.order = nil
+      return
+    end
+    if self.path then
+      self:stepPath(dt)
+      return
+    end
+    -- at the door: fight off anything that comes close, otherwise search
+    local threat = game:nearestZombie(self.x, self.y, 1.6)
+    if threat then
+      self:attack(game, threat)
+    else
+      game:searchTick(self, o.site, dt)
+    end
+    return
+  end
 
   local hold = o and o.kind == "hold"
   if self.focus and self.focus.dead then self.focus = nil end
@@ -382,6 +432,7 @@ function Survivor:attack(game, z)
     if love.math.random() < self:traitAdd("waste") then
       game.res.ammo = math.max(0, game.res.ammo - 1)
     end
+    game:noise(self.x, self.y, 10, self)
   end
   local hit = love.math.random() < self:hitChance(game, wd)
   game:attackFx(self, z, wd, hit)
@@ -404,6 +455,7 @@ function Survivor:stateLabel()
   if st == "downed" then return string.format("DOWN (%ds)", math.ceil(self.downTimer)) end
   if st == "dead" then return "Dead" end
   local o = self.order
+  if o and o.kind == "search" then return self.path and "Heading out" or "Searching" end
   if o and o.kind == "move" then return "Moving" end
   if o and o.kind == "amove" then return "Attack-moving" end
   if o and o.kind == "hold" then return "Holding" end
@@ -420,6 +472,26 @@ function Survivor:draw(game)
   game:drawCastShadow(self.x, self.y, 1)
   lg.setColor(0, 0, 0, 0.5)
   lg.ellipse("fill", sx, sy, 7, 3.5)
+
+  local id = Units.survivorId(self)
+  if id then
+    -- the group's colour as a faint mark on the ground
+    G.setc(col, 0.55)
+    lg.setLineWidth(1.5)
+    lg.ellipse("line", sx, sy, 6.5, 3.2)
+    local h = Units.SURVIVOR_H
+    if self.state == "downed" then
+      Units.draw(id, sx - self.face * 4, sy, self.face, h, 0, 0, 1, { 0.75, 0.7, 0.68 }, 0.35)
+      return
+    end
+    local step = math.sin(self.anim * 10)
+    local lift = self.moving and math.abs(step) * 1.6 or 0
+    local lean = self.moving and step * 0.05 + 0.04 or 0
+    if self.attackAnim then lean = lean + 0.12 end
+    Units.draw(id, sx, sy, self.face, h, lean, lift, 0, nil, 0.35)
+    if self.hurtFlash then Units.flash(id, sx, sy, self.face, h, lean, lift, self.hurtFlash * 4) end
+    return
+  end
 
   if self.state == "downed" then
     G.setc(col, 0.6)
