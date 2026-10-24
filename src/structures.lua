@@ -122,11 +122,11 @@ local function drawWall(s)
 end
 
 -- Draws a building's painting (or its glow layer) over its footprint,
--- mirrored when the building is flipped.
+-- mirrored when its turn calls for it (see S.new).
 local function drawSprite(s, sp, img)
   local sx, sy = P(s.cx, s.cy, 0)
   local d, k = sp.def, sp.def.scale
-  lg.draw(img or sp.img, sx, sy, 0, s.flip and -k or k, k, d.ax, d.ay)
+  lg.draw(img or sp.img, sx, sy, 0, s.mirror and -k or k, k, d.ax, d.ay)
 end
 S.drawSpriteAt = drawSprite
 
@@ -135,7 +135,7 @@ local function spriteBox(s, sp)
   local sx, sy = P(s.cx, s.cy, 0)
   local d, k = sp.def, sp.def.scale
   local w, h = sp.img:getWidth() * k, sp.img:getHeight() * k
-  local left = s.flip and sx - (sp.img:getWidth() - d.ax) * k or sx - d.ax * k
+  local left = s.mirror and sx - (sp.img:getWidth() - d.ax) * k or sx - d.ax * k
   return left, sy - d.ay * k, w, h
 end
 
@@ -254,9 +254,14 @@ S.DEFS = {
 
   barracks = foundation("Combat", "School Bus Barracks", "school_bus_barracks",
     "Combat drills here. A repurposed school bus for housing and training combat personnel.", { hp = 650, barZ = 2.6 }),
-  armory = foundation("Combat", "Box Truck Armory", "box_truck_armory",
+  armory = foundation("Combat", "Box Truck Armory", "box_truck_armory_r0",
     "Stores rifles and pistols and issues them to mobilizing groups; without it they collect gear at the HQ.",
-    { w = 4, h = 3, hp = 700 }),
+    { w = 4, h = 3, hp = 700, views = {
+      [0] = { sprite = "box_truck_armory_r0" }, -- side to the south-west, cab to the south-east
+      [1] = { sprite = "box_truck_armory_r1" }, -- cab to the south-west
+      [2] = { sprite = "box_truck_armory_r3", mirror = true }, -- back to the south-east
+      [3] = { sprite = "box_truck_armory_r3" }, -- back to the south-west
+    } }),
   trailer = foundation("Combat", "Trailer Blockade", "trailer_blockade",
     "Combat drills here. Trailers welded into a fortified line that takes a beating.", { hp = 1000, barZ = 1.8 }),
 
@@ -333,6 +338,12 @@ for _, kind in ipairs({ "garden", "hydroponics", "barracks", "armory", "trailer"
 end
 S.BUILD_COST = 40 -- scrap
 
+-- How many distinct turns R cycles through: four for a building painted
+-- from several sides, two (as painted, and mirrored) otherwise.
+function S.turns(kind)
+  return S.DEFS[kind].views and 4 or 2
+end
+
 function S.new(kind, x1, y1, opts)
   local def = S.DEFS[kind]
   local s = {
@@ -344,8 +355,17 @@ function S.new(kind, x1, y1, opts)
   if opts then
     for k, v in pairs(opts) do s[k] = v end
   end
-  -- a flipped building is the painting mirrored, which turns its footprint
-  if s.flip then s.w, s.h = def.h, def.w end
+  -- s.rot quarter turns: each one swaps the footprint's sides. A building
+  -- painted from several sides shows the matching view; one painted once
+  -- is mirrored for an odd turn.
+  local rot = s.rot or 0
+  if rot % 2 == 1 then s.w, s.h = def.h, def.w end
+  local view = def.views and def.views[rot]
+  if view then
+    s.sprite, s.mirror = view.sprite, view.mirror
+  else
+    s.mirror = rot % 2 == 1
+  end
   s.sprite = s.sprite or def.sprite or (kind == "hq" and s.hqId) or nil
   s.wx1, s.wy1 = x1 - 1, y1 - 1
   s.wx2, s.wy2 = s.wx1 + s.w, s.wy1 + s.h

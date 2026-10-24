@@ -3,7 +3,7 @@
 -- to sprite size.
 --
 --   love . --process-units "<folder or PNG>" ["<another>" ...]
---   love . --process-units --sheet <name> "<walk sheet PNG>"
+--   love . --process-units --sheet <name>[:<layout>] "<walk sheet PNG>"   (layouts: walk8, walk16)
 --
 -- Every <name><n>.png (combat1.png, zombie7.png, ...) becomes
 -- assets/units/<name><n>.png, with each sprite's size, foot anchor and head
@@ -304,27 +304,50 @@ local function processOne(path, file, outDir)
   return id, emit(cut, cw, ch, footX, headX, OUT_H / ch, id, outDir)
 end
 
--- A walk sheet: 4 columns (front, side, three-quarter front, back) by 2
--- rows (left foot forward, right foot forward) on a plain background, each
--- figure facing screen-right. Cells become <name>_<view><row>.
-local SHEET_VIEWS = { "front", "side", "back", "q" }
+-- Walk sheet layouts: where each frame sits, as a rect (x, y, w, h) or a
+-- fraction of a grid cell, and the frame it becomes, <name>_<view><n>. Every
+-- figure faces screen-right; the label under each one is cropped off.
+local LAYOUTS = {}
 
-local function processSheet(path, name, outDir, index)
-  local img = love.image.newImageData(love.filesystem.newFileData(readFile(path), "sheet.png"))
-  local w, h = img:getDimensions()
-  local cw, chh = math.floor(w / 4), math.floor(h / 2)
-  local fig = math.floor(chh * 0.86) -- the label under each figure is cropped off
-  local cuts, tallest = {}, 0
+-- 4 columns (front, side, back, three-quarter front) by 2 rows (left foot
+-- forward, right foot forward).
+LAYOUTS.walk8 = function(w, h)
+  local cw, ch = math.floor(w / 4), math.floor(h / 2)
+  local fig = math.floor(ch * 0.86)
+  local out = {}
   for row = 1, 2 do
-    for col = 1, 4 do
-      local cell = love.image.newImageData(cw, fig)
-      cell:paste(img, 0, 0, (col - 1) * cw, (row - 1) * chh, cw, fig)
-      local c = { cutFigure(cell, false, "span") }
-      cell:release()
-      c.id = name .. "_" .. SHEET_VIEWS[col] .. row
-      cuts[#cuts + 1] = c
-      tallest = math.max(tallest, c[3])
+    for col, view in ipairs({ "front", "side", "back", "q" }) do
+      out[#out + 1] = { frame = view .. row, rect = { (col - 1) * cw, (row - 1) * ch, cw, fig } }
     end
+  end
+  return out
+end
+
+-- The 16-pose sheet (1448x1086): a four-step side walk and the
+-- back-diagonal ("bq") views. Its other poses repeat the walk8 sheet.
+LAYOUTS.walk16 = function()
+  return {
+    { frame = "side1", rect = { 490, 0, 240, 318 } }, -- 03 short stride
+    { frame = "side2", rect = { 730, 0, 250, 318 } }, -- 04 long stride
+    { frame = "side3", rect = { 495, 345, 250, 318 } }, -- 09 short stride, other foot
+    { frame = "side4", rect = { 235, 345, 260, 318 } }, -- 08 long stride, other foot
+    { frame = "bq1", rect = { 980, 0, 240, 318 } }, -- 05
+    { frame = "bq2", rect = { 0, 345, 235, 318 } }, -- 07
+  }
+end
+
+local function processSheet(path, name, layout, outDir, index)
+  local img = love.image.newImageData(love.filesystem.newFileData(readFile(path), "sheet.png"))
+  local cuts, tallest = {}, 0
+  for _, f in ipairs(assert(LAYOUTS[layout], "unknown sheet layout " .. layout)(img:getDimensions())) do
+    local r = f.rect
+    local cell = love.image.newImageData(r[3], r[4])
+    cell:paste(img, 0, 0, r[1], r[2], r[3], r[4])
+    local c = { cutFigure(cell, false, "span") }
+    cell:release()
+    c.id = name .. "_" .. f.frame
+    cuts[#cuts + 1] = c
+    tallest = math.max(tallest, c[3])
   end
   img:release()
   -- one scale for every frame, so the figure does not grow and shrink as it walks
@@ -334,7 +357,7 @@ local function processSheet(path, name, outDir, index)
   end
 end
 
--- Arguments are folders or single PNGs. LÃ–VE runs out of memory after a few
+-- Arguments are folders or single PNGs. LÖVE runs out of memory after a few
 -- dozen full-size portraits in one go, so a big batch can be fed one file per
 -- run: each run merges its sprites into the existing index.
 return function(paths)
@@ -353,7 +376,9 @@ return function(paths)
     elseif sheetName == true then
       sheetName = path
     elseif sheetName then
-      processSheet(path, sheetName, outDir, index)
+      -- <name> or <name>:<layout>
+      local name, layout = sheetName:match("^([^:]+):?(.*)$")
+      processSheet(path, name, layout ~= "" and layout or "walk8", outDir, index)
       sheetName = nil
     elseif path:lower():match("%.png$") then
       local dir, file = path:match("^(.*)[/\\]([^/\\]+)$")

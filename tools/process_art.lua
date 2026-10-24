@@ -31,6 +31,18 @@ local PROPS = {
   { id = "firebarrel", rect = { 1060, 560, 460, 395 } },
 }
 
+-- Rotation sheets: one building from several sides, in quarter-turn views
+-- named <id>_r<turn>. Each is a 2x2 grid with a label under each view; the
+-- rects leave the labels out. Turn 2 is drawn as turn 3 mirrored (see
+-- the building's views in src/structures.lua).
+local ROTATION_SHEETS = {
+  ["box_truck_armory_views.png"] = {
+    { id = "box_truck_armory_r0", rect = { 0, 30, 838, 432 } }, -- LEFT
+    { id = "box_truck_armory_r1", rect = { 0, 515, 812, 440 } }, -- RIGHT
+    { id = "box_truck_armory_r3", rect = { 818, 515, 630, 440 } }, -- BACK
+  },
+}
+
 -- Renders whose ground runs off the edge of the image get a soft oval fade.
 local EDGE_FADE = { salvage_garden = true }
 
@@ -515,6 +527,10 @@ return function(src)
     if lower == "terrain.png" then
       for _, p in ipairs(PROPS) do
         processOne(src, props, { file = file, id = p.id, rect = p.rect })
+      end
+    elseif ROTATION_SHEETS[lower] then
+      for _, v in ipairs(ROTATION_SHEETS[lower]) do
+        processOne(src, buildings, { file = file, id = v.id, rect = v.rect })
       end
     elseif not lower:match("^terrain") then
       local id = ART_IDS[lower] or lower:gsub("%.png$", ""):gsub("[%s%-]+", "_")

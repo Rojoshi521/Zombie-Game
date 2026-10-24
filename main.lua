@@ -219,11 +219,11 @@ local function runAutotest(dt)
       UI.placing, UI.groupOpen = nil, false
       game:placeBuilding("garden", B + 16, B + 26)
       game.res.scrap = game.res.scrap + 5 * 40
-      game:placeBuilding("armory", B + 28, B + 17)
+      game:placeBuilding("armory", B + 28, B + 17, 3)
       game:placeBuilding("barracks", B + 29, B + 29)
       game:placeBuilding("lookout", B + 23, B + 16)
       game:placeBuilding("salvage", B + 16, B + 31)
-      game:placeBuilding("laundromat", B + 30, B + 33, true)
+      game:placeBuilding("laundromat", B + 30, B + 33, 1)
       a.camX, a.camY = game.camera.x, game.camera.y
       game.camera.x, game.camera.y = Iso.toScreen(B + 26, B + 28)
     end },
@@ -325,7 +325,7 @@ function love.update(dt)
     local p = UI.placing
     if p and not p.fixed then
       local wx, wy = game.camera:screenToWorld(love.mouse.getPosition())
-      p.x1, p.y1, p.w, p.h = game:footprintAt(p.kind, wx, wy, p.flip)
+      p.x1, p.y1, p.w, p.h = game:footprintAt(p.kind, wx, wy, p.rot)
     end
   end
 end
@@ -393,7 +393,7 @@ function love.mousepressed(x, y, b)
     local p = UI.placing
     if p then
       -- Shift keeps the same building in hand for another
-      if game:placeBuilding(p.kind, p.x1, p.y1, p.flip) and not love.keyboard.isDown("lshift", "rshift") then
+      if game:placeBuilding(p.kind, p.x1, p.y1, p.rot) and not love.keyboard.isDown("lshift", "rshift") then
         UI.placing = nil
       end
       return
@@ -482,7 +482,7 @@ function love.keypressed(key)
     elseif UI.groupOpen then UI.groupOpen = false
     else game.selection = {} end
   elseif key == "r" and UI.placing then
-    UI.placing.flip = not UI.placing.flip
+    UI.placing.rot = (UI.placing.rot + 1) % S.turns(UI.placing.kind)
   elseif key == "f1" or key == "/" then
     UI.help = not UI.help
   elseif key == "a" then

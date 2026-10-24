@@ -28,12 +28,12 @@ Units.ZOMBIE_SET = {
   brute = { 3 },
 }
 
--- Groups with a walk sheet (front, side, three-quarter and back views, two
--- stride frames each), cut by `--process-units --sheet <name>`. These take
--- the place of the group's portraits.
-Units.WALK_SET = {
-  Combat = "soldier",
-}
+-- Groups with a walk sheet (front, three-quarter front, side, back-diagonal
+-- and back views, several stride frames each), cut by
+-- `--process-units --sheet <name>`. These take the place of the group's
+-- portraits. Everyone wears the soldier for now.
+Units.WALK_SET = {}
+for group in pairs(Units.GROUP_SET) do Units.WALK_SET[group] = "soldier" end
 
 -- On-screen height in pixels at zoom 1.
 Units.SURVIVOR_H = 48
@@ -75,19 +75,34 @@ function Units.view(dx, dy)
   local sx, sy = (dx - dy) * 2, dx + dy -- screen direction
   local face = sx < 0 and -1 or 1
   local ax = math.abs(sx)
-  if sy > 0 and ax < sy * 0.5 then return "front", 1 end
-  if sy < 0 and ax < -sy * 0.5 then return "back", 1 end
-  if sy > 0 then return "q", face end
-  return "side", face
+  if math.abs(sy) < ax * 0.2 then return "side", face end
+  if sy > 0 then return ax < sy * 0.5 and "front" or "q", ax < sy * 0.5 and 1 or face end
+  return ax < -sy * 0.5 and "back" or "bq", ax < -sy * 0.5 and 1 or face
+end
+
+-- How many stride frames a sheet has for a view (side1, side2, ...).
+local frameCounts = {}
+local function frames(set, view)
+  local key = set .. "_" .. view
+  if not frameCounts[key] then
+    local n = 0
+    while images[key .. (n + 1)] do n = n + 1 end
+    frameCounts[key] = n
+  end
+  return frameCounts[key]
 end
 
 -- The sprite id for a survivor in their current group. Groups with a walk
--- sheet pick the frame for the survivor's heading and stride.
+-- sheet pick the frame for the survivor's heading and stride: one frame per
+-- step, cycling through the view's frames.
 function Units.survivorId(s)
   local walk = Units.WALK_SET[s.group]
   if walk and images[walk .. "_front1"] then
-    local frame = s.moving and math.floor(s.anim * 10 / math.pi) % 2 + 1 or 1
-    return walk .. "_" .. (s.view or "q") .. frame, true
+    local view = s.view or "q"
+    if frames(walk, view) == 0 then view = "side" end -- a sheet without back-diagonals
+    local n = frames(walk, view)
+    local frame = s.moving and math.floor(s.anim * 10 / math.pi) % n + 1 or 1
+    return walk .. "_" .. view .. frame, true
   end
   local set = Units.GROUP_SET[s.group]
   local n = set and Units.count(set) or 0

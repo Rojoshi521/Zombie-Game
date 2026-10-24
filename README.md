@@ -25,8 +25,9 @@ or drag the project folder onto `love.exe`.
 - **Build your own base**: a run starts with only the headquarters inside the walls and scrap
   for one building, so the first choice is the player's. Each group's panel lists its three
   foundations from the design bible (40 scrap each); pick one and place it on the grid like a
-  StarCraft building, its tiles green where it fits and red where it doesn't. R turns it
-  (the painting is mirrored), Shift-click places another, right-click cancels. Nothing is built
+  StarCraft building, its tiles green where it fits and red where it doesn't. R turns it a
+  quarter at a time: the Box Truck Armory, painted from several sides, shows the matching
+  view; buildings painted once are mirrored. Shift-click places another, right-click cancels. Nothing is built
   at night. A group without a building waits at the HQ and does nothing; Leadership needs none.
   Without an armory, gear is handed out at the HQ.
 - **Ten specialization groups**, one survivor in each at the start, managed from the
@@ -111,8 +112,17 @@ A group can instead wear a walk sheet: 4 columns (front, side, three-quarter fro
 rows (left foot forward, right foot forward), each figure facing screen-right on a plain
 background, with an optional label under each figure. `love . --process-units --sheet soldier
 "<sheet PNG>"` cuts it into `soldier_<view><1|2>` frames at one shared scale, and
-`Units.WALK_SET` in `src/units.lua` assigns it to a group (Combat wears `soldier`). Survivors
-then show the view matching their heading and alternate the two stride frames as they walk.
+`Units.WALK_SET` in `src/units.lua` assigns it to a group (every group wears `soldier` for
+now). The 16-pose sheet adds a four-step side walk and back-diagonal views:
+`--sheet soldier:walk16 "<sheet PNG>"` (the layouts are in `LAYOUTS` in
+`tools/process_units.lua`). Survivors show the view matching their heading (front,
+three-quarter, side, back-diagonal, back; mirrored for the left) and step through its frames as
+they walk.
+
+A building painted from several sides comes as a rotation sheet: name it in `ROTATION_SHEETS`
+in `tools/process_art.lua` with the rectangle of each view, which become `<id>_r0`, `_r1`, ...,
+then list them as the building's `views` in `src/structures.lua` (one per quarter turn; a
+missing turn can reuse another view mirrored).
 
 To add or update a painting:
 

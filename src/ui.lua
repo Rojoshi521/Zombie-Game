@@ -12,7 +12,7 @@ local UI = {
   panels = {},
   tab = "Combat",
   groupOpen = false, -- whether the panel for UI.tab is showing
-  placing = nil, -- the building being placed: kind, flip and footprint
+  placing = nil, -- the building being placed: kind, turn (rot) and footprint
   rallyMode = nil,
   amove = false,
   help = false,
@@ -358,7 +358,7 @@ local function groupPanel(game, w, h)
       if b.kind == kind then built = built + 1 end
     end
     button(bx, cy, bw, 24, def.name .. (built > 0 and (" (" .. built .. ")") or ""), function()
-      UI.placing = { kind = kind, flip = false }
+      UI.placing = { kind = kind, rot = 0 }
       UI.rallyMode, UI.amove = nil, false
     end, { disabled = why ~= nil, font = G.font.s, active = UI.placing and UI.placing.kind == kind })
     bx = bx + bw + 4

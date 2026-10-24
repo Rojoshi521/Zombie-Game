@@ -276,6 +276,10 @@ D.SPRITES = {
   water_park_lifeguard_tower = { ax = 388, ay = 342, scale = 0.36, foot = 3 },
   garbage_compactor_truck = { ax = 398, ay = 211, scale = 0.36, foot = 3 },
   box_truck_armory = { ax = 400, ay = 340, scale = 0.31, foot = { 4, 3 } },
+  -- the armory from three sides (tools/process_art.lua ROTATION_SHEETS)
+  box_truck_armory_r0 = { ax = 225, ay = 134, scale = 0.54, foot = { 4, 3 } },
+  box_truck_armory_r1 = { ax = 222, ay = 142, scale = 0.54, foot = { 3, 4 } },
+  box_truck_armory_r3 = { ax = 172, ay = 145, scale = 0.6, foot = { 3, 4 } },
   salvage_garden = { ax = 400, ay = 290, scale = 0.36, foot = 4 },
   school_bus_barracks = { ax = 395, ay = 300, scale = 0.36, foot = 3 },
   hydroponic_shipping_containers = { ax = 422, ay = 280, scale = 0.36, foot = 3 },

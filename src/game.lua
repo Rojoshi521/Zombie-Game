@@ -727,7 +727,7 @@ function Game:destroyStructure(s)
   end
   self.decals[#self.decals + 1] = { kind = "rubble", bits = bits, t = 0, life = 9999 }
   if s.repairable and s.kind ~= "hq" then
-    self.ruins[#self.ruins + 1] = { kind = s.kind, x1 = s.x1, y1 = s.y1, dir = s.dir, strip = s.strip, name = s.name, flip = s.flip }
+    self.ruins[#self.ruins + 1] = { kind = s.kind, x1 = s.x1, y1 = s.y1, dir = s.dir, strip = s.strip, name = s.name, rot = s.rot }
   end
   if s == self.hq then
     self:gameOver("The " .. self.hqDef.name .. " has fallen.")
@@ -764,11 +764,11 @@ end
 -- Building
 
 -- The footprint of a building of this kind centred on world point (wx, wy):
--- its first cell and size. Flipping swaps the sides.
-function Game:footprintAt(kind, wx, wy, flip)
+-- its first cell and size. A quarter turn swaps the sides.
+function Game:footprintAt(kind, wx, wy, rot)
   local def = S.DEFS[kind]
   local w, h = def.w, def.h
-  if flip then w, h = h, w end
+  if (rot or 0) % 2 == 1 then w, h = h, w end
   return math.floor(wx - w / 2 + 0.5) + 1, math.floor(wy - h / 2 + 0.5) + 1, w, h
 end
 
@@ -794,7 +794,7 @@ function Game:buildBlocker()
   if self.res.scrap < S.BUILD_COST then return "Not enough scrap (" .. S.BUILD_COST .. " needed)." end
 end
 
-function Game:placeBuilding(kind, x1, y1, flip)
+function Game:placeBuilding(kind, x1, y1, rot)
   local why = self:buildBlocker()
   if why then
     self:message(why, "bad")
@@ -802,13 +802,13 @@ function Game:placeBuilding(kind, x1, y1, flip)
   end
   local def = S.DEFS[kind]
   local w, h = def.w, def.h
-  if flip then w, h = h, w end
+  if (rot or 0) % 2 == 1 then w, h = h, w end
   if not self:checkPlacement(x1, y1, w, h) then
     self:message("Can't build there.", "bad")
     return false
   end
   self.res.scrap = self.res.scrap - S.BUILD_COST
-  self:addStructure(kind, x1, y1, { flip = flip })
+  self:addStructure(kind, x1, y1, { rot = rot })
   self.map:computeFlow(self.hq)
   self.minimapDirty = true
   self:message(def.name .. " built. " .. def.group .. " can get to work.", "good")
@@ -824,7 +824,7 @@ end
 function Game:drawPlacement(p)
   local ok, cells = self:checkPlacement(p.x1, p.y1, p.w, p.h)
   ok = ok and not self:buildBlocker()
-  local ghost = S.new(p.kind, p.x1, p.y1, { flip = p.flip })
+  local ghost = S.new(p.kind, p.x1, p.y1, { rot = p.rot })
   local sp = S.spriteFor(ghost)
   if sp then
     if ok then lg.setColor(1, 1, 1, 0.55) else lg.setColor(1, 0.55, 0.5, 0.55) end
@@ -859,7 +859,7 @@ function Game:repairWalls()
   for i = #self.ruins, 1, -1 do
     local r = self.ruins[i]
     if self.res.scrap >= REBUILD_COST and not cellOccupied(self, r.x1, r.y1) then
-      self:addStructure(r.kind, r.x1, r.y1, { dir = r.dir, strip = r.strip, flip = r.flip, repairable = true })
+      self:addStructure(r.kind, r.x1, r.y1, { dir = r.dir, strip = r.strip, rot = r.rot, repairable = true })
       self.res.scrap = self.res.scrap - REBUILD_COST
       spent = spent + REBUILD_COST
       table.remove(self.ruins, i)
